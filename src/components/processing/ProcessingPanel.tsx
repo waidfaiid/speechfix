@@ -26,6 +26,8 @@ export function ProcessingPanel() {
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
   }, [params])
 
+  const isOriginalMode = abMode === 'original'
+
   return (
     <div className="px-4 pb-4 space-y-5">
 
@@ -50,85 +52,99 @@ export function ProcessingPanel() {
         </div>
       </div>
 
-      {/* Hum */}
-      <ProcessingSlider
-        label="Brummen"
-        icon={<Radio size={16} />}
-        value={store.humAmount}
-        onChange={store.setHumAmount}
-        enabled={store.humEnabled}
-        onToggle={store.setHumEnabled}
-        displayValue={`${Math.round(store.humAmount * 100)}%`}
-      />
+      {isOriginalMode && (
+        <p className="text-center text-xs text-text-secondary py-1">
+          Original-Modus — Effekte werden nicht angewendet
+        </p>
+      )}
 
-      {/* Noise */}
-      <ProcessingSlider
-        label="Rauschen"
-        icon={<Volume2 size={16} />}
-        value={store.noiseAmount}
-        onChange={store.setNoiseAmount}
-        enabled={store.noiseEnabled}
-        onToggle={store.setNoiseEnabled}
-        displayValue={`${Math.round(store.noiseAmount * 100)}%`}
-      />
+      {/* Processing controls — dimmed when in original bypass mode */}
+      <div className={cn(
+        'space-y-5 transition-opacity duration-200',
+        isOriginalMode && 'opacity-30 pointer-events-none select-none',
+      )}>
 
-      {/* EQ */}
-      <ProcessingSlider
-        label="Klang"
-        icon={<SlidersHorizontal size={16} />}
-        value={store.eqIntensity}
-        onChange={store.setEqIntensity}
-        enabled={store.eqEnabled}
-        onToggle={store.setEqEnabled}
-        displayValue={`${Math.round(store.eqIntensity * 100)}%`}
-        action={
-          <button
-            onClick={() => setShowEQPro(true)}
-            className="ml-2 px-2 py-0.5 text-xs font-medium text-accent border border-accent/30 rounded-pill hover:bg-accent/10 transition-colors"
-          >
-            Pro
-          </button>
-        }
-      />
+        {/* Hum */}
+        <ProcessingSlider
+          label="Brummen"
+          icon={<Radio size={16} />}
+          value={store.humAmount}
+          onChange={store.setHumAmount}
+          enabled={store.humEnabled}
+          onToggle={store.setHumEnabled}
+          displayValue={`${Math.round(store.humAmount * 100)}%`}
+        />
 
-      {/* Compression */}
-      <ProcessingSlider
-        label="Dynamik"
-        icon={<Activity size={16} />}
-        value={store.compressionAmount}
-        onChange={store.setCompressionAmount}
-        enabled={store.compressionEnabled}
-        onToggle={store.setCompressionEnabled}
-        displayValue={`${Math.round(store.compressionAmount * 100)}%`}
-      />
+        {/* Noise */}
+        <ProcessingSlider
+          label="Rauschen"
+          icon={<Volume2 size={16} />}
+          value={store.noiseAmount}
+          onChange={store.setNoiseAmount}
+          enabled={store.noiseEnabled}
+          onToggle={store.setNoiseEnabled}
+          displayValue={`${Math.round(store.noiseAmount * 100)}%`}
+        />
 
-      {/* Exciter */}
-      <ProcessingSlider
-        label="Präsenz"
-        icon={<Sparkles size={16} />}
-        value={store.exciterAmount}
-        onChange={store.setExciterAmount}
-        enabled={store.exciterEnabled}
-        onToggle={store.setExciterEnabled}
-        displayValue={`${Math.round(store.exciterAmount * 100)}%`}
-      >
-        <div className="flex gap-2 pt-1">
-          {(['brilliance', 'warmth'] as const).map((mode) => (
+        {/* EQ */}
+        <ProcessingSlider
+          label="Klang"
+          icon={<SlidersHorizontal size={16} />}
+          value={store.eqIntensity}
+          onChange={store.setEqIntensity}
+          enabled={store.eqEnabled}
+          onToggle={store.setEqEnabled}
+          displayValue={`${Math.round(store.eqIntensity * 100)}%`}
+          action={
             <button
-              key={mode}
-              onClick={() => store.setExciterMode(mode)}
-              className={cn(
-                'flex-1 py-1.5 rounded-pill text-xs font-medium transition-colors',
-                store.exciterMode === mode
-                  ? 'bg-accent/20 text-accent border border-accent/30'
-                  : 'bg-slider-track text-text-secondary hover:text-text-primary',
-              )}
+              onClick={() => setShowEQPro(true)}
+              className="ml-2 px-2 py-0.5 text-xs font-medium text-accent border border-accent/30 rounded-pill hover:bg-accent/10 transition-colors"
             >
-              {mode === 'brilliance' ? 'Höhen' : 'Wärme'}
+              Pro
             </button>
-          ))}
-        </div>
-      </ProcessingSlider>
+          }
+        />
+
+        {/* Compression */}
+        <ProcessingSlider
+          label="Dynamik"
+          icon={<Activity size={16} />}
+          value={store.compressionAmount}
+          onChange={store.setCompressionAmount}
+          enabled={store.compressionEnabled}
+          onToggle={store.setCompressionEnabled}
+          displayValue={`${Math.round(store.compressionAmount * 100)}%`}
+        />
+
+        {/* Exciter */}
+        <ProcessingSlider
+          label="Präsenz"
+          icon={<Sparkles size={16} />}
+          value={store.exciterAmount}
+          onChange={store.setExciterAmount}
+          enabled={store.exciterEnabled}
+          onToggle={store.setExciterEnabled}
+          displayValue={`${Math.round(store.exciterAmount * 100)}%`}
+        >
+          <div className="flex gap-2 pt-1">
+            {(['brilliance', 'warmth'] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => store.setExciterMode(mode)}
+                className={cn(
+                  'flex-1 py-1.5 rounded-pill text-xs font-medium transition-colors',
+                  store.exciterMode === mode
+                    ? 'bg-accent/20 text-accent border border-accent/30'
+                    : 'bg-slider-track text-text-secondary hover:text-text-primary',
+                )}
+              >
+                {mode === 'brilliance' ? 'Höhen' : 'Wärme'}
+              </button>
+            ))}
+          </div>
+        </ProcessingSlider>
+
+      </div>{/* end processing controls */}
 
       {/* LUFS Target */}
       <div className="bg-card border border-card-border rounded-card p-4 space-y-3">

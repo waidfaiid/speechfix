@@ -1,7 +1,6 @@
 import { audioContextManager } from './AudioContextManager'
 import type { ProcessingParams } from '@/types/processing.types'
-import { createSoftClipCurve, createWarmthCurve, dbToLinear } from '@/utils/audioMath'
-import type { EQBand } from '@/types/audio.types'
+import { createSoftClipCurve, createWarmthCurve } from '@/utils/audioMath'
 
 export class AudioEngine {
   private ctx: AudioContext | null = null
@@ -46,7 +45,7 @@ export class AudioEngine {
     if (!this.ctx) return
     const ctx = this.ctx
 
-    // Hum removal: 4 notch filters
+    // Hum removal: 4 notch filters, start with gain=0 (no effect)
     this.humFilters = [50, 100, 150, 200].map((freq) => {
       const n = ctx.createBiquadFilter()
       n.type = 'notch'
@@ -55,43 +54,47 @@ export class AudioEngine {
       return n
     })
 
-    // Noise gate for preview
+    // High-pass for LF cleanup (always on, fixed at 80Hz)
     this.noiseHP = ctx.createBiquadFilter()
     this.noiseHP.type = 'highpass'
     this.noiseHP.frequency.value = 80
+    this.noiseHP.Q.value = 0.7
 
+    // Noise "gate" preview: a gentle high-shelf cut to simulate noise floor reduction.
+    // Real denoising happens in FFmpeg on export. ratio=1 = transparent bypass.
     this.noiseGate = ctx.createDynamicsCompressor()
-    this.noiseGate.threshold.value = -50
-    this.noiseGate.knee.value = 10
-    this.noiseGate.ratio.value = 20
-    this.noiseGate.attack.value = 0
-    this.noiseGate.release.value = 0.1
+    this.noiseGate.threshold.value = -100
+    this.noiseGate.knee.value = 30
+    this.noiseGate.ratio.value = 1   // 1:1 = bypass until explicitly enabled
+    this.noiseGate.attack.value = 0.02
+    this.noiseGate.release.value = 0.3
 
-    // EQ (7 bands) – starts flat
+    // EQ (7 bands)
     this.eqNodes = Array.from({ length: 7 }, () => {
       const n = ctx.createBiquadFilter()
       n.type = 'peaking'
       return n
     })
 
-    // Compressor
+    // Compressor — starts bypassed (ratio=1)
     this.compressor = ctx.createDynamicsCompressor()
     this.compressor.threshold.value = -24
-    this.compressor.knee.value = 6
-    this.compressor.ratio.value = 4
-    this.compressor.attack.value = 0.01
-    this.compressor.release.value = 0.1
+    this.compressor.knee.value = 8
+    this.compressor.ratio.value = 1
+    this.compressor.attack.value = 0.015
+    this.compressor.release.value = 0.15
 
-    // Exciter
+    // Exciter waveshaper — null curve = transparent passthrough
     this.exciterWaveshaper = ctx.createWaveShaper()
-    this.exciterWaveshaper.curve = createSoftClipCurve(0.3) as unknown as Float32Array<ArrayBuffer>
+    this.exciterWaveshaper.curve = null
     this.exciterWaveshaper.oversample = '4x'
     this.exciterGain = ctx.createGain()
-    this.exciterGain.gain.value = 0
+    this.exciterGain.gain.value = 1
 
-    // Limiter / output gain
+    // Safety true-peak limiter: fixed at -0.5dBTP, never changes.
+    // LUFS normalization is for export only, not the preview.
     this.limiterGain = ctx.createGain()
-    this.limiterGain.gain.value = 0.9
+    this.limiterGain.gain.value = 0.94
 
     // A/B gains
     this.processedGain = ctx.createGain()
@@ -102,7 +105,6 @@ export class AudioEngine {
     this.masterOut = ctx.createGain()
     this.masterOut.gain.value = 1
 
-    // Wire processed chain
     this.connectChain([
       ...this.humFilters,
       this.noiseHP,
@@ -213,15 +215,27 @@ export class AudioEngine {
     if (!this.ctx) return
     const now = this.ctx.currentTime
 
-    // Hum
+    // Hum: notch filters only reduce when enabled — gain stays at 0 when off
+    // BiquadFilter 'notch' type doesn't use gain, so no-op. Bypass by setting Q
+    // very low (flat response) when disabled.
     this.humFilters.forEach((f) => {
-      f.gain.setTargetAtTime(params.humEnabled ? -params.humAmount * 30 : 0, now, 0.016)
+      f.Q.setTargetAtTime(
+        params.humEnabled ? 10 + params.humAmount * 20 : 0.01,
+        now, 0.05,
+      )
     })
 
-    // Noise gate
+    // Noise gate preview: when disabled keep ratio=1 (transparent).
+    // When enabled, apply a very gentle gate — real denoising is FFmpeg export only.
     if (this.noiseGate) {
-      const threshold = params.noiseEnabled ? -50 + params.noiseAmount * 30 : -100
-      this.noiseGate.threshold.setTargetAtTime(threshold, now, 0.016)
+      if (params.noiseEnabled) {
+        const threshold = -70 + params.noiseAmount * 30  // -70 to -40 dBFS
+        this.noiseGate.threshold.setTargetAtTime(threshold, now, 0.05)
+        this.noiseGate.ratio.setTargetAtTime(1 + params.noiseAmount * 2, now, 0.05) // 1:1 to 3:1
+      } else {
+        // ratio=1 is a true bypass for DynamicsCompressor
+        this.noiseGate.ratio.setTargetAtTime(1, now, 0.05)
+      }
     }
 
     // EQ
@@ -237,30 +251,30 @@ export class AudioEngine {
       node.Q.setTargetAtTime(band.q, now, 0.016)
     })
 
-    // Compressor
+    // Compressor: ratio=1 = full bypass. Threshold range -12dB (gentle) to -36dB (heavy).
     if (this.compressor) {
-      const threshold = params.compressionEnabled ? -40 + params.compressionAmount * 20 : 0
-      this.compressor.threshold.setTargetAtTime(threshold, now, 0.016)
-      this.compressor.ratio.setTargetAtTime(params.compressionEnabled ? 4 : 1, now, 0.016)
+      if (params.compressionEnabled) {
+        const threshold = -12 - params.compressionAmount * 24  // -12 to -36 dB
+        this.compressor.threshold.setTargetAtTime(threshold, now, 0.05)
+        this.compressor.ratio.setTargetAtTime(1 + params.compressionAmount * 5, now, 0.05) // 1:1 to 6:1
+      } else {
+        this.compressor.ratio.setTargetAtTime(1, now, 0.05)
+      }
     }
 
-    // Exciter
-    if (this.exciterWaveshaper && this.exciterGain) {
-      const curve = params.exciterMode === 'warmth'
-        ? createWarmthCurve(params.exciterAmount)
-        : createSoftClipCurve(params.exciterAmount)
-      this.exciterWaveshaper.curve = params.exciterEnabled ? (curve as unknown as Float32Array<ArrayBuffer>) : null
-      this.exciterGain.gain.setTargetAtTime(
-        params.exciterEnabled ? params.exciterAmount * 0.3 : 0,
-        now, 0.016,
-      )
+    // Exciter: null curve = transparent passthrough when disabled
+    if (this.exciterWaveshaper) {
+      if (params.exciterEnabled && params.exciterAmount > 0) {
+        const curve = params.exciterMode === 'warmth'
+          ? createWarmthCurve(params.exciterAmount * 0.5)   // half-strength to avoid distortion
+          : createSoftClipCurve(params.exciterAmount * 0.4)
+        this.exciterWaveshaper.curve = curve as unknown as Float32Array<ArrayBuffer>
+      } else {
+        this.exciterWaveshaper.curve = null
+      }
     }
 
-    // Limiter target
-    if (this.limiterGain) {
-      const targetLinear = dbToLinear(params.limiterTarget + 1)
-      this.limiterGain.gain.setTargetAtTime(Math.min(targetLinear, 1), now, 0.05)
-    }
+    // limiterGain stays fixed at 0.94 — LUFS normalization is export-only
   }
 
   private startRaf(): void {

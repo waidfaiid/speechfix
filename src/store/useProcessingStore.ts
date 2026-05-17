@@ -24,17 +24,17 @@ interface ProcessingStore extends ProcessingParams {
 }
 
 export const useProcessingStore = create<ProcessingStore>((set, get) => ({
-  humEnabled: true,
-  humAmount: 0.7,
-  noiseEnabled: true,
-  noiseAmount: 0.5,
+  humEnabled: false,
+  humAmount: 0.5,
+  noiseEnabled: false,
+  noiseAmount: 0.4,
   eqEnabled: true,
-  eqIntensity: 0.6,
+  eqIntensity: 0.5,
   eqBands: SPEECH_EQ_CURVE,
-  compressionEnabled: true,
-  compressionAmount: 0.5,
-  exciterEnabled: true,
-  exciterAmount: 0.3,
+  compressionEnabled: false,
+  compressionAmount: 0.3,
+  exciterEnabled: false,
+  exciterAmount: 0.2,
   exciterMode: 'brilliance',
   limiterTarget: -14,
 
