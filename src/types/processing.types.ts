@@ -3,6 +3,7 @@ import type { EQBand, ExciterMode } from './audio.types'
 export interface ProcessingParams {
   humEnabled: boolean
   humAmount: number
+  humQ: number
 
   noiseEnabled: boolean
   noiseAmount: number
@@ -17,6 +18,12 @@ export interface ProcessingParams {
   exciterEnabled: boolean
   exciterAmount: number
   exciterMode: ExciterMode
+
+  desibilanceEnabled: boolean
+  /** 0 = bypass, 1 = maximum de-essing (threshold −30 dBFS, up to −12 dB gain reduction) */
+  desibilanceAmount: number
+  /** Detected sibilance peak frequency in Hz (auto-set by LTAS analysis) */
+  desibilanceFreq: number
 
   limiterTarget: number
 }

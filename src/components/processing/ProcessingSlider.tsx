@@ -16,23 +16,26 @@ interface ProcessingSliderProps {
   step?: number
   children?: ReactNode
   action?: ReactNode
+  /** Rendered between displayValue and the toggle switch (e.g. a dropdown) */
+  rightAddon?: ReactNode
 }
 
 export function ProcessingSlider({
   label, icon, value, onChange, enabled = true, onToggle,
-  displayValue, min = 0, max = 1, step = 0.01, children, action,
+  displayValue, min = 0, max = 1, step = 0.01, children, action, rightAddon,
 }: ProcessingSliderProps) {
   const pct = Math.round(((value - min) / (max - min)) * 100)
 
   return (
-    <div className={cn('space-y-3', !enabled && 'opacity-50')}>
+    <div className="space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-text-secondary">{icon}</span>
           <span className="font-medium text-text-primary text-sm">{label}</span>
           {action}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {rightAddon}
           <span className="text-text-secondary text-xs tabular-nums">
             {displayValue ?? `${pct}%`}
           </span>
@@ -40,9 +43,9 @@ export function ProcessingSlider({
             <Switch.Root
               checked={enabled}
               onCheckedChange={onToggle}
-              className="w-9 h-5 rounded-pill bg-slider-track data-[state=checked]:bg-accent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              className="w-9 h-5 rounded-pill border-2 border-text-secondary/30 bg-transparent data-[state=checked]:bg-accent data-[state=checked]:border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             >
-              <Switch.Thumb className="block w-4 h-4 rounded-full bg-white translate-x-0.5 data-[state=checked]:translate-x-4 transition-transform" />
+              <Switch.Thumb className="block w-3.5 h-3.5 rounded-full bg-text-secondary/60 data-[state=checked]:bg-white translate-x-0.5 data-[state=checked]:translate-x-4 transition-transform" />
             </Switch.Root>
           )}
         </div>

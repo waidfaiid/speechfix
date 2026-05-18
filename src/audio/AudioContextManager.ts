@@ -34,10 +34,17 @@ class AudioContextManager {
 
   private async registerWorklets(): Promise<void> {
     if (!this.ctx) return
-    try {
-      await this.ctx.audioWorklet.addModule('/worklets/denoise-processor.js')
-    } catch {
-      // worklet registration can fail gracefully if file doesn't exist yet
+    const modules = [
+      '/worklets/denoise-processor.js',
+      '/worklets/de-esser-processor.js',
+    ]
+    for (const path of modules) {
+      try {
+        await this.ctx.audioWorklet.addModule(path)
+      } catch {
+        // Worklet registration failures are non-fatal; the engine falls back
+        // to the static BiquadFilter de-esser when the worklet is unavailable.
+      }
     }
   }
 

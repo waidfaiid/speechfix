@@ -16,6 +16,8 @@ export interface BatchFile {
   waveformData?: Float32Array
   lufs?: number
   error?: string
+  /** Sample rate of the decoded audio buffer (from AudioContext) */
+  originalSampleRate?: number
 }
 
 export interface ExportProgress {

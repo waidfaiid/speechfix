@@ -1,56 +1,28 @@
-import { useEffect, useRef } from 'react'
-import { Radio, Volume2, SlidersHorizontal, Activity, Sparkles, Target, Repeat } from 'lucide-react'
+import { Radio, Volume2, SlidersHorizontal, Activity, Sparkles, Target, Repeat, AudioWaveform } from 'lucide-react'
 import { useProcessingStore } from '@/store/useProcessingStore'
 import { useAudioStore } from '@/store/useAudioStore'
 import { useUIStore } from '@/store/useUIStore'
-import { audioEngine } from '@/audio/AudioEngine'
 import { ProcessingSlider } from './ProcessingSlider'
-import { Button } from '@/components/ui/Button'
 import { cn } from '@/utils/cn'
 
 const LUFS_OPTIONS = [-10, -12, -14, -16, -18, -23]
 
+const HUM_Q_OPTIONS = [
+  { label: 'sehr fein', value: 20 },
+  { label: 'fein',      value: 12 },
+  { label: 'mittel',    value: 8  },
+  { label: 'grob',      value: 5  },
+]
+
 export function ProcessingPanel() {
   const store = useProcessingStore()
-  const { abMode, setAbMode } = useAudioStore()
+  const { abMode } = useAudioStore()
   const { setShowEQPro } = useUIStore()
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const params = store.getParams()
-
-  useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => {
-      audioEngine.updateParams(params)
-    }, 16)
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
-  }, [params])
 
   const isOriginalMode = abMode === 'original'
 
   return (
     <div className="px-4 pb-4 space-y-5">
-
-      {/* A/B Compare */}
-      <div className="bg-card border border-card-border rounded-card p-3 flex items-center justify-between">
-        <span className="text-text-secondary text-sm">Vergleich</span>
-        <div className="flex gap-2">
-          {(['original', 'processed'] as const).map((mode) => (
-            <button
-              key={mode}
-              onClick={() => { setAbMode(mode); audioEngine.setABMode(mode) }}
-              className={cn(
-                'px-3 py-1.5 rounded-pill text-xs font-medium transition-colors',
-                abMode === mode
-                  ? 'bg-accent text-white'
-                  : 'bg-slider-track text-text-secondary hover:text-text-primary',
-              )}
-            >
-              {mode === 'original' ? 'Original' : 'Bearbeitet'}
-            </button>
-          ))}
-        </div>
-      </div>
 
       {isOriginalMode && (
         <p className="text-center text-xs text-text-secondary py-1">
@@ -72,7 +44,19 @@ export function ProcessingPanel() {
           onChange={store.setHumAmount}
           enabled={store.humEnabled}
           onToggle={store.setHumEnabled}
-          displayValue={`${Math.round(store.humAmount * 100)}%`}
+          displayValue={store.humAmount === 0 ? '0 dB' : `-${Math.round(store.humAmount * 40)} dB`}
+          rightAddon={
+            <select
+              value={store.humQ}
+              onChange={(e) => store.setHumQ(Number(e.target.value))}
+              disabled={!store.humEnabled}
+              className="text-xs bg-slider-track text-text-primary rounded-pill px-2.5 py-1 border-0 outline-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {HUM_Q_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          }
         />
 
         {/* Noise */}
@@ -88,7 +72,7 @@ export function ProcessingPanel() {
 
         {/* EQ */}
         <ProcessingSlider
-          label="Klang"
+          label="Klang der Stimme / Equalizer"
           icon={<SlidersHorizontal size={16} />}
           value={store.eqIntensity}
           onChange={store.setEqIntensity}
@@ -105,9 +89,24 @@ export function ProcessingPanel() {
           }
         />
 
+        {/* De-esser */}
+        <ProcessingSlider
+          label="Zischen / De-Esser"
+          icon={<AudioWaveform size={16} />}
+          value={store.desibilanceAmount}
+          onChange={store.setDesibilanceAmount}
+          enabled={store.desibilanceEnabled}
+          onToggle={store.setDesibilanceEnabled}
+          displayValue={
+            store.desibilanceAmount === 0
+              ? 'aus'
+              : `${Math.round(store.desibilanceAmount * 100)}% · ${Math.round(store.desibilanceFreq / 100) / 10} kHz`
+          }
+        />
+
         {/* Compression */}
         <ProcessingSlider
-          label="Dynamik"
+          label="Dynamik / Compressor"
           icon={<Activity size={16} />}
           value={store.compressionAmount}
           onChange={store.setCompressionAmount}
@@ -118,7 +117,7 @@ export function ProcessingPanel() {
 
         {/* Exciter */}
         <ProcessingSlider
-          label="Präsenz"
+          label="Präsenz / Exciter"
           icon={<Sparkles size={16} />}
           value={store.exciterAmount}
           onChange={store.setExciterAmount}

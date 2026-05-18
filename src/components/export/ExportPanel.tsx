@@ -9,16 +9,45 @@ import { exportFile } from '@/audio/ffmpeg/Transcoder'
 import { ffmpegManager } from '@/audio/ffmpeg/FFmpegManager'
 import JSZip from 'jszip'
 import type { ExportFormat, ExportQuality, SampleRate } from '@/types/processing.types'
+import type { BatchFile } from '@/types/file.types'
 import { cn } from '@/utils/cn'
 
 const FORMATS: ExportFormat[] = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg']
-const QUALITIES = [
-  { value: 'low' as ExportQuality, label: 'Niedrig' },
-  { value: 'medium' as ExportQuality, label: 'Mittel' },
-  { value: 'high' as ExportQuality, label: 'Hoch' },
-  { value: 'lossless' as ExportQuality, label: 'Verlustfrei' },
+
+const QUALITIES: { value: ExportQuality; label: string }[] = [
+  { value: 'low',      label: 'Niedrig' },
+  { value: 'medium',   label: 'Mittel' },
+  { value: 'high',     label: 'Hoch' },
+  { value: 'lossless', label: 'Verlustfrei' },
 ]
+
+const QUALITY_ORDER: ExportQuality[] = ['low', 'medium', 'high', 'lossless']
+
 const SAMPLE_RATES: SampleRate[] = [44100, 48000]
+
+const LOSSLESS_FORMATS = new Set(['wav', 'flac', 'aiff'])
+
+/**
+ * Estimate the quality ceiling of a file based on extension and bitrate.
+ * Lossy formats above their natural bitrate range can't be meaningfully
+ * up-exported — higher quality settings would just bloat the file size.
+ */
+function getQualityCeiling(file: BatchFile): ExportQuality {
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  if (LOSSLESS_FORMATS.has(ext)) return 'lossless'
+  if (file.duration <= 0) return 'high' // unknown duration → allow up to high
+
+  const bitrateKbps = (file.file.size * 8) / file.duration / 1000
+
+  if (bitrateKbps < 96)  return 'low'
+  if (bitrateKbps < 160) return 'medium'
+  if (bitrateKbps < 260) return 'high'
+  return 'high' // even high-bitrate lossy stays capped at 'high'; lossless needs lossless source
+}
+
+function isQualityDisabled(quality: ExportQuality, ceiling: ExportQuality): boolean {
+  return QUALITY_ORDER.indexOf(quality) > QUALITY_ORDER.indexOf(ceiling)
+}
 
 export function ExportPanel() {
   const { exportOptions, setExportOptions, getParams } = useProcessingStore()
@@ -30,6 +59,16 @@ export function ExportPanel() {
   const estimatedSize = activeFile
     ? estimateExportSize(activeFile.duration, exportOptions.format, exportOptions.quality)
     : 0
+
+  const qualityCeiling: ExportQuality = activeFile ? getQualityCeiling(activeFile) : 'lossless'
+
+  // Available sample rates: only show rates ≤ original (when known)
+  const originalSr = activeFile?.originalSampleRate
+  const availableSampleRates = SAMPLE_RATES.filter(
+    (sr) => !originalSr || sr <= originalSr + 1000 // +1000 tolerance for rounding
+  )
+  // If no rate passes the filter, show all
+  const shownSampleRates = availableSampleRates.length > 0 ? availableSampleRates : SAMPLE_RATES
 
   async function startExport() {
     if (!ffmpegManager.isLoaded) {
@@ -70,7 +109,7 @@ export function ExportPanel() {
             fileIndex: i + 1,
             totalFiles: filesToExport.length,
             stepProgress: p,
-            stepLabel: p < 50 ? 'Filter anwenden…' : 'Lautstärke anpassen…',
+            stepLabel: p < 30 ? 'Lautheit messen…' : p < 90 ? 'Filter & Limiter anwenden…' : 'Wird abgeschlossen…',
             estimatedSecondsLeft: 0,
           })
         })
@@ -128,28 +167,40 @@ export function ExportPanel() {
         <div className="space-y-2">
           <label className="text-xs text-text-secondary">Qualität</label>
           <div className="grid grid-cols-2 gap-2">
-            {QUALITIES.map((q) => (
-              <button
-                key={q.value}
-                onClick={() => setExportOptions({ quality: q.value })}
-                className={cn(
-                  'py-2 rounded-lg text-xs font-medium transition-colors',
-                  exportOptions.quality === q.value
-                    ? 'bg-accent text-white'
-                    : 'bg-slider-track text-text-secondary hover:text-text-primary',
-                )}
-              >
-                {q.label}
-              </button>
-            ))}
+            {QUALITIES.map((q) => {
+              const disabled = isQualityDisabled(q.value, qualityCeiling)
+              return (
+                <button
+                  key={q.value}
+                  onClick={() => !disabled && setExportOptions({ quality: q.value })}
+                  disabled={disabled}
+                  title={disabled ? 'Überschreitet die Qualität der Originaldatei' : undefined}
+                  className={cn(
+                    'py-2 rounded-lg text-xs font-medium transition-colors',
+                    disabled
+                      ? 'opacity-30 cursor-not-allowed bg-slider-track text-text-secondary'
+                      : exportOptions.quality === q.value
+                        ? 'bg-accent text-white'
+                        : 'bg-slider-track text-text-secondary hover:text-text-primary',
+                  )}
+                >
+                  {q.label}
+                </button>
+              )
+            })}
           </div>
+          {qualityCeiling !== 'lossless' && (
+            <p className="text-xs text-text-secondary">
+              Höhere Qualitätsstufen sind nicht verfügbar — die Originaldatei überschreitet diese nicht.
+            </p>
+          )}
         </div>
 
         {/* Sample Rate */}
         <div className="space-y-2">
           <label className="text-xs text-text-secondary">Sample-Rate</label>
           <div className="flex gap-2">
-            {SAMPLE_RATES.map((sr) => (
+            {shownSampleRates.map((sr) => (
               <button
                 key={sr}
                 onClick={() => setExportOptions({ sampleRate: sr })}
@@ -180,7 +231,7 @@ export function ExportPanel() {
             type="text"
             value={exportOptions.filename}
             onChange={(e) => setExportOptions({ filename: e.target.value })}
-            placeholder="predigt_fixed"
+            placeholder={activeFile ? activeFile.name.replace(/\.[^.]+$/, '') + '_fixed' : 'datei_fixed'}
             className="w-full bg-slider-track text-text-primary text-sm rounded-lg px-3 py-2.5 border border-card-border focus:outline-none focus:border-accent placeholder:text-text-secondary"
           />
         </div>

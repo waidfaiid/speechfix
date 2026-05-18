@@ -64,6 +64,23 @@ class FFmpegManager {
     await this.instance.exec(args)
   }
 
+  /**
+   * Run FFmpeg and capture all log lines for parsing measurement output
+   * (e.g. ebur128 loudness summary). The permanent dev-mode log listener
+   * is unaffected; this adds a temporary second listener.
+   */
+  async execCaptureLogs(args: string[]): Promise<string[]> {
+    const logs: string[] = []
+    const handler = ({ message }: { message: string }) => logs.push(message)
+    this.instance.on('log', handler)
+    try {
+      await this.instance.exec(args)
+    } finally {
+      this.instance.off('log', handler)
+    }
+    return logs
+  }
+
   async deleteFile(name: string): Promise<void> {
     try { await this.instance.deleteFile(name) } catch { /* ignore */ }
   }

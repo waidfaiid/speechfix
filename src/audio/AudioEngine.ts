@@ -15,6 +15,9 @@ export class AudioEngine {
   private compressor: DynamicsCompressorNode | null = null
   private exciterWaveshaper: WaveShaperNode | null = null
   private exciterGain: GainNode | null = null
+  // De-esser: AudioWorkletNode when available, BiquadFilter as fallback
+  private desibilanceWorklet: AudioWorkletNode | null = null
+  private desibilanceFallback: BiquadFilterNode | null = null
   private limiterGain: GainNode | null = null
   private processedGain: GainNode | null = null
   private bypassGain: GainNode | null = null
@@ -45,12 +48,14 @@ export class AudioEngine {
     if (!this.ctx) return
     const ctx = this.ctx
 
-    // Hum removal: 4 notch filters, start with gain=0 (no effect)
+    // Hum removal: 4 peaking filters (gain=0 = transparent bypass).
+    // Using 'peaking' instead of 'notch' to allow gain control from 0 to -20 dB.
     this.humFilters = [50, 100, 150, 200].map((freq) => {
       const n = ctx.createBiquadFilter()
-      n.type = 'notch'
+      n.type = 'peaking'
       n.frequency.value = freq
-      n.Q.value = 30
+      n.Q.value = 12
+      n.gain.value = 0
       return n
     })
 
@@ -91,6 +96,25 @@ export class AudioEngine {
     this.exciterGain = ctx.createGain()
     this.exciterGain.gain.value = 1
 
+    // De-esser: try the AudioWorklet first (dynamic), fall back to static biquad.
+    // The worklet is registered by AudioContextManager before buildGraph() is called.
+    try {
+      this.desibilanceWorklet = new AudioWorkletNode(ctx, 'de-esser-processor', {
+        numberOfInputs:  1,
+        numberOfOutputs: 1,
+        // 'max' inherits the channel count from the connected input (handles mono + stereo)
+        channelCountMode: 'max',
+      })
+    } catch {
+      // Worklet unavailable (e.g. file not found in dev) — use static peaking EQ.
+      const f = ctx.createBiquadFilter()
+      f.type = 'peaking'
+      f.frequency.value = 7000
+      f.Q.value = 3
+      f.gain.value = 0
+      this.desibilanceFallback = f
+    }
+
     // Safety true-peak limiter: fixed at -0.5dBTP, never changes.
     // LUFS normalization is for export only, not the preview.
     this.limiterGain = ctx.createGain()
@@ -110,6 +134,8 @@ export class AudioEngine {
       this.noiseHP,
       this.noiseGate,
       ...this.eqNodes,
+      // Use whichever de-esser node was successfully created
+      this.desibilanceWorklet ?? this.desibilanceFallback,
       this.compressor,
       this.exciterWaveshaper,
       this.limiterGain,
@@ -120,9 +146,10 @@ export class AudioEngine {
     this.masterOut.connect(ctx.destination)
   }
 
-  private connectChain(nodes: AudioNode[]): void {
-    for (let i = 0; i < nodes.length - 1; i++) {
-      nodes[i].connect(nodes[i + 1])
+  private connectChain(nodes: (AudioNode | null)[]): void {
+    const valid = nodes.filter((n): n is AudioNode => n !== null)
+    for (let i = 0; i < valid.length - 1; i++) {
+      valid[i].connect(valid[i + 1])
     }
   }
 
@@ -215,14 +242,16 @@ export class AudioEngine {
     if (!this.ctx) return
     const now = this.ctx.currentTime
 
-    // Hum: 'allpass' is a true amplitude-transparent bypass.
-    // 'notch' with high Q = narrow, surgical hum removal.
-    this.humFilters.forEach((f) => {
+    // Hum: peaking filter with negative gain. gain=0 = transparent bypass.
+    // Harmonics are reduced progressively: 2nd at 70%, 3rd at 50%, 4th at 30%.
+    const HUM_HARMONIC_SCALE = [1, 0.7, 0.5, 0.3]
+    this.humFilters.forEach((f, i) => {
+      const scale = HUM_HARMONIC_SCALE[i] ?? 0.3
+      f.Q.setTargetAtTime(params.humQ, now, 0.05)
       if (params.humEnabled) {
-        f.type = 'notch'
-        f.Q.setTargetAtTime(10 + params.humAmount * 20, now, 0.05)
+        f.gain.setTargetAtTime(-(params.humAmount * 20) * scale, now, 0.05)
       } else {
-        f.type = 'allpass'
+        f.gain.setTargetAtTime(0, now, 0.05)
       }
     })
 
@@ -263,6 +292,13 @@ export class AudioEngine {
       }
     }
 
+    // De-esser: prefer the AudioWorklet (dynamic), fall back to static biquad.
+    if (this.desibilanceWorklet) {
+      this._updateWorkletDeEsser(params, now)
+    } else if (this.desibilanceFallback) {
+      this._updateFallbackDeEsser(params, now)
+    }
+
     // Exciter: null curve = transparent passthrough when disabled
     if (this.exciterWaveshaper) {
       if (params.exciterEnabled && params.exciterAmount > 0) {
@@ -276,6 +312,60 @@ export class AudioEngine {
     }
 
     // limiterGain stays fixed at 0.94 — LUFS normalization is export-only
+  }
+
+  /**
+   * Update the dynamic de-esser AudioWorklet parameters.
+   *
+   * Slider `amount` (0–1) maps to:
+   *   threshold   : −12 dBFS (amount=0) → −30 dBFS (amount=1)   linear: 0.25 → 0.032
+   *   maxReduction:    0 dB  (amount=0) →  −12 dB  (amount=1)
+   *   ratio       : fixed 4:1 (standard for de-essing speech)
+   *   bandwidth   : fixed Q=2.5 (moderately narrow — covers the whole S band)
+   *
+   * This maps intuitively: low slider = only the sharpest S sounds are caught,
+   * full slider = even moderate sibilance is tamed, max −12 dB reduction.
+   */
+  private _updateWorkletDeEsser(params: ProcessingParams, now: number): void {
+    const p = this.desibilanceWorklet!.parameters
+
+    const freqParam      = p.get('frequency')
+    const threshParam    = p.get('threshold')
+    const maxRedParam    = p.get('maxGainReductionDb')
+    const enabledParam   = p.get('enabled')
+
+    if (!freqParam || !threshParam || !maxRedParam || !enabledParam) return
+
+    freqParam.setTargetAtTime(params.desibilanceFreq, now, 0.05)
+
+    if (params.desibilanceEnabled && params.desibilanceAmount > 0) {
+      // threshold: −12 dBFS at amount=0 → −30 dBFS at amount=1
+      // The sidechain bandpass output for typical sibilance sits around −20 to −10 dBFS,
+      // so this range catches everything from only-the-worst to very-gentle S sounds.
+      const threshDb     = -12 - params.desibilanceAmount * 18
+      const threshLinear = Math.pow(10, threshDb / 20)
+      const maxReductionDb = params.desibilanceAmount * 12   // 0 → 12 dB
+
+      threshParam.setTargetAtTime(threshLinear,    now, 0.05)
+      maxRedParam.setTargetAtTime(maxReductionDb,  now, 0.05)
+      enabledParam.setTargetAtTime(1,              now, 0.02)
+    } else {
+      enabledParam.setTargetAtTime(0, now, 0.02)
+    }
+  }
+
+  /**
+   * Fallback: static peaking EQ de-esser (used when the AudioWorklet is unavailable).
+   * Less transparent than the dynamic worklet but always available.
+   * Max cut is −12 dB (increased from the previous −8 dB).
+   */
+  private _updateFallbackDeEsser(params: ProcessingParams, now: number): void {
+    const f = this.desibilanceFallback!
+    f.frequency.setTargetAtTime(params.desibilanceFreq, now, 0.05)
+    const gain = params.desibilanceEnabled && params.desibilanceAmount > 0
+      ? -(params.desibilanceAmount * 12)
+      : 0
+    f.gain.setTargetAtTime(gain, now, 0.05)
   }
 
   private startRaf(): void {

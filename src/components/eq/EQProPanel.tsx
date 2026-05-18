@@ -1,67 +1,101 @@
-import { useState } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { X } from 'lucide-react'
+import { X, RefreshCw, Loader2 } from 'lucide-react'
 import { useProcessingStore } from '@/store/useProcessingStore'
 import { useUIStore } from '@/store/useUIStore'
+import { useFileStore } from '@/store/useFileStore'
 import { EQGraph } from './EQGraph'
-import { EQ_PRESETS, type EQPresetKey } from '@/utils/eqCurves'
-import * as RadixSlider from '@radix-ui/react-slider'
+import { analyzeLTAS } from '@/audio/analysis/LTASAnalyzer'
+import { computeEQCorrection } from '@/utils/eqMatcher'
 import * as RadixSwitch from '@radix-ui/react-switch'
 import { cn } from '@/utils/cn'
 import type { BiquadFilterType } from '@/types/audio.types'
 
-const PRESET_LABELS: Record<EQPresetKey, string> = {
-  speech_neutral: 'Standard',
-  speech_warm: 'Warm',
-  speech_bright: 'Brillant',
-  podcast: 'Podcast',
-  flat: 'Flach',
-}
-
 const FILTER_TYPES: { value: BiquadFilterType; label: string }[] = [
   { value: 'peaking', label: 'Peaking' },
-  { value: 'highshelf', label: 'High Shelf' },
-  { value: 'lowshelf', label: 'Low Shelf' },
-  { value: 'highpass', label: 'High Pass' },
-  { value: 'lowpass', label: 'Low Pass' },
+  { value: 'highshelf', label: 'Hi Shelf' },
+  { value: 'lowshelf', label: 'Lo Shelf' },
+  { value: 'highpass', label: 'Hi Pass' },
+  { value: 'lowpass', label: 'Lo Pass' },
   { value: 'notch', label: 'Notch' },
 ]
 
 export function EQProPanel() {
-  const { showEQPro, setShowEQPro } = useUIStore()
-  const { eqBands, setEqBand, setEqBands } = useProcessingStore()
+  const { showEQPro, setShowEQPro, addToast } = useUIStore()
+  const {
+    eqBands, setEqBand, setEqBands,
+    measuredLTAS, referenceLTAS,
+    analysisStatus, analysisProgress,
+    setMeasuredLTAS, setAnalysisStatus, setAnalysisProgress,
+  } = useProcessingStore()
+  const activeFile = useFileStore((s) => s.getActiveFile())
+
   const [selectedId, setSelectedId] = useState<string | null>(eqBands[0]?.id ?? null)
+  const [isReanalyzing, setIsReanalyzing] = useState(false)
 
   const selected = eqBands.find((b) => b.id === selectedId)
+
+  const handleReanalyze = useCallback(async () => {
+    if (!activeFile || isReanalyzing) return
+    setIsReanalyzing(true)
+    setAnalysisStatus('running')
+    setAnalysisProgress(0)
+    setMeasuredLTAS(null)
+    try {
+      const ltas = await analyzeLTAS(activeFile.file, (p) => setAnalysisProgress(p))
+      setMeasuredLTAS(ltas)
+      const corrected = computeEQCorrection(ltas, referenceLTAS, eqBands)
+      setEqBands(corrected)
+      setAnalysisStatus('done')
+      addToast('Klang-Korrektur neu berechnet ✓', 'success')
+    } catch {
+      setAnalysisStatus('error')
+      addToast('Neu-Analyse fehlgeschlagen', 'error')
+    } finally {
+      setIsReanalyzing(false)
+    }
+  }, [activeFile, isReanalyzing, eqBands, referenceLTAS, setMeasuredLTAS, setEqBands, setAnalysisStatus, setAnalysisProgress, addToast])
+
+  const isRunning = analysisStatus === 'running' || isReanalyzing
 
   return (
     <Dialog.Root open={showEQPro} onOpenChange={setShowEQPro}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/70 z-50 animate-fade-in" />
-        <Dialog.Content className="fixed inset-x-0 bottom-0 z-50 bg-card border-t border-card-border rounded-t-2xl max-h-[90vh] overflow-y-auto animate-fade-in">
+        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 bg-card border border-card-border rounded-2xl max-h-[85vh] w-full max-w-2xl overflow-y-auto animate-fade-in">
           <div className="sticky top-0 bg-card border-b border-card-border px-4 py-3 flex items-center justify-between">
-            <Dialog.Title className="text-text-primary font-semibold">Equalizer</Dialog.Title>
-            <Dialog.Close asChild>
-              <button className="p-2 text-text-secondary hover:text-text-primary transition-colors" aria-label="Schließen">
-                <X size={20} />
-              </button>
-            </Dialog.Close>
+            <Dialog.Title className="text-text-primary font-semibold">Klang der Stimme / Equalizer</Dialog.Title>
+            <div className="flex items-center gap-2">
+              {activeFile && (
+                <button
+                  onClick={handleReanalyze}
+                  disabled={isRunning}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-pill text-xs font-medium transition-colors',
+                    isRunning
+                      ? 'bg-slider-track text-text-secondary cursor-not-allowed'
+                      : 'bg-accent/10 text-accent border border-accent/30 hover:bg-accent/20'
+                  )}
+                >
+                  {isRunning
+                    ? <Loader2 size={12} className="animate-spin" />
+                    : <RefreshCw size={12} />
+                  }
+                  {isRunning
+                    ? `Analysiere… ${Math.round(analysisProgress * 100)}%`
+                    : 'Neu berechnen'
+                  }
+                </button>
+              )}
+              <Dialog.Close asChild>
+                <button className="p-2 text-text-secondary hover:text-text-primary transition-colors" aria-label="Schließen">
+                  <X size={20} />
+                </button>
+              </Dialog.Close>
+            </div>
           </div>
 
           <div className="p-4 space-y-4">
-            {/* Presets */}
-            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-              {(Object.keys(EQ_PRESETS) as EQPresetKey[]).map((key) => (
-                <button
-                  key={key}
-                  onClick={() => setEqBands(EQ_PRESETS[key].map((b) => ({ ...b })))}
-                  className="shrink-0 px-3 py-1.5 rounded-pill text-xs font-medium bg-slider-track text-text-secondary hover:text-text-primary hover:bg-card-border transition-colors"
-                >
-                  {PRESET_LABELS[key]}
-                </button>
-              ))}
-            </div>
-
             {/* Graph */}
             <div className="bg-background border border-card-border rounded-card overflow-hidden">
               <EQGraph
@@ -70,8 +104,11 @@ export function EQProPanel() {
                 onBandSelect={setSelectedId}
                 onBandChange={(id, freq, gain) => setEqBand(id, { freq, gain })}
                 onBandQChange={(id, q) => setEqBand(id, { q })}
+                measuredLTAS={measuredLTAS}
+                referenceLTAS={referenceLTAS}
               />
-              {/* Freq labels */}
+
+              {/* Freq axis labels */}
               <div className="flex justify-between px-2 pb-2">
                 {['20', '50', '100', '200', '500', '1k', '2k', '5k', '10k', '20k'].map((f) => (
                   <span key={f} className="text-text-secondary text-xs">{f}</span>
@@ -79,14 +116,34 @@ export function EQProPanel() {
               </div>
             </div>
 
-            {/* Band selection */}
-            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+            {/* Curve legend */}
+            <div className="flex flex-wrap gap-x-4 gap-y-1 px-1">
+              <LegendItem color="#6366f1" label="EQ-Kurve (aktiv)" />
+              {measuredLTAS && <LegendItem color="#f59e0b" label="Deine Aufnahme" muted />}
+              <LegendItem color="#2dd4bf" label="Profi-Referenz" muted />
+            </div>
+
+            {/* Analysis status banner */}
+            {analysisStatus === 'running' && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-accent/10 border border-accent/20 rounded-card text-xs text-accent">
+                <Loader2 size={12} className="animate-spin shrink-0" />
+                Analysiere Aufnahme… {Math.round(analysisProgress * 100)}%
+              </div>
+            )}
+            {analysisStatus === 'error' && (
+              <div className="px-3 py-2 bg-error/10 border border-error/20 rounded-card text-xs text-error">
+                Analyse fehlgeschlagen – Standard-Kurve wird verwendet.
+              </div>
+            )}
+
+            {/* Band selection — wraps into two rows on narrow screens */}
+            <div className="flex flex-wrap gap-2">
               {eqBands.map((band) => (
                 <button
                   key={band.id}
                   onClick={() => setSelectedId(band.id)}
                   className={cn(
-                    'shrink-0 px-3 py-1.5 rounded-pill text-xs font-medium transition-colors',
+                    'px-3 py-1.5 rounded-pill text-xs font-medium transition-colors',
                     selectedId === band.id
                       ? 'bg-accent text-white'
                       : 'bg-slider-track text-text-secondary hover:text-text-primary',
@@ -98,9 +155,9 @@ export function EQProPanel() {
               ))}
             </div>
 
-            {/* Selected band controls */}
+            {/* Selected band controls — one row */}
             {selected && (
-              <div className="bg-background border border-card-border rounded-card p-4 space-y-4">
+              <div className="bg-background border border-card-border rounded-card p-3 space-y-3">
                 <div className="flex items-center justify-between">
                   <p className="text-text-primary font-medium text-sm">{selected.label}</p>
                   <div className="flex items-center gap-2">
@@ -117,62 +174,48 @@ export function EQProPanel() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-xs text-text-secondary">Frequenz</label>
-                    <input
-                      type="number"
-                      value={selected.freq}
-                      min={20} max={20000}
-                      onChange={(e) => setEqBand(selected.id, { freq: Number(e.target.value) })}
-                      className="w-full bg-slider-track text-text-primary text-sm rounded-lg px-3 py-2 border border-card-border focus:outline-none focus:border-accent"
-                    />
-                    <span className="text-xs text-text-secondary">Hz</span>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-xs text-text-secondary">Verstärkung</label>
-                    <input
-                      type="number"
-                      value={selected.gain}
-                      min={-18} max={18} step={0.5}
-                      onChange={(e) => setEqBand(selected.id, { gain: Number(e.target.value) })}
-                      className="w-full bg-slider-track text-text-primary text-sm rounded-lg px-3 py-2 border border-card-border focus:outline-none focus:border-accent"
-                    />
-                    <span className="text-xs text-text-secondary">dB</span>
-                  </div>
-                </div>
-
-                {selected.type !== 'highpass' && selected.type !== 'lowpass' && (
-                  <div className="space-y-2">
-                    <div className="flex justify-between">
-                      <label className="text-xs text-text-secondary">Güte (Q) — Scroll auf Graph</label>
-                      <span className="text-xs text-text-primary">{selected.q.toFixed(2)}</span>
-                    </div>
-                    <RadixSlider.Root
-                      value={[selected.q]}
-                      onValueChange={([v]) => setEqBand(selected.id, { q: v })}
-                      min={0.1} max={10} step={0.05}
-                      className="relative flex items-center select-none touch-none w-full h-9"
+                <div className="flex gap-1.5">
+                  <DragField
+                    label="Freq"
+                    value={selected.freq}
+                    unit="Hz"
+                    min={20}
+                    max={20000}
+                    logScale
+                    onChangeValue={(v) => setEqBand(selected.id, { freq: Math.round(v) })}
+                    formatValue={(v) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}`}
+                  />
+                  <DragField
+                    label="Gain"
+                    value={selected.gain}
+                    unit="dB"
+                    min={-18}
+                    max={18}
+                    onChangeValue={(v) => setEqBand(selected.id, { gain: parseFloat(v.toFixed(1)) })}
+                    formatValue={(v) => (v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1))}
+                    disabled={selected.type === 'highpass' || selected.type === 'lowpass'}
+                  />
+                  <DragField
+                    label="Q"
+                    value={selected.q}
+                    unit=""
+                    min={0.1}
+                    max={10}
+                    onChangeValue={(v) => setEqBand(selected.id, { q: parseFloat(v.toFixed(2)) })}
+                    formatValue={(v) => v.toFixed(2)}
+                  />
+                  <div className="flex-1 min-w-0 bg-slider-track rounded-lg px-2 py-1.5 flex flex-col gap-0.5">
+                    <span className="text-[10px] text-text-secondary leading-none">Typ</span>
+                    <select
+                      value={selected.type}
+                      onChange={(e) => setEqBand(selected.id, { type: e.target.value as BiquadFilterType })}
+                      className="bg-transparent text-xs font-semibold text-text-primary focus:outline-none w-full cursor-pointer leading-tight"
                     >
-                      <RadixSlider.Track className="bg-slider-track relative grow rounded-pill h-1.5">
-                        <RadixSlider.Range className="absolute bg-accent rounded-pill h-full" />
-                      </RadixSlider.Track>
-                      <RadixSlider.Thumb className="block w-5 h-5 bg-white rounded-full border-2 border-accent focus-visible:outline-none" />
-                    </RadixSlider.Root>
+                      {FILTER_TYPES.map((t) => (
+                        <option key={t.value} value={t.value}>{t.label}</option>
+                      ))}
+                    </select>
                   </div>
-                )}
-
-                <div className="space-y-1">
-                  <label className="text-xs text-text-secondary">Filter-Typ</label>
-                  <select
-                    value={selected.type}
-                    onChange={(e) => setEqBand(selected.id, { type: e.target.value as BiquadFilterType })}
-                    className="w-full bg-slider-track text-text-primary text-sm rounded-lg px-3 py-2 border border-card-border focus:outline-none focus:border-accent"
-                  >
-                    {FILTER_TYPES.map((t) => (
-                      <option key={t.value} value={t.value}>{t.label}</option>
-                    ))}
-                  </select>
                 </div>
               </div>
             )}
@@ -180,5 +223,96 @@ export function EQProPanel() {
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  )
+}
+
+interface DragFieldProps {
+  label: string
+  value: number
+  unit: string
+  onChangeValue: (v: number) => void
+  min: number
+  max: number
+  logScale?: boolean
+  formatValue?: (v: number) => string
+  disabled?: boolean
+}
+
+function DragField({
+  label,
+  value,
+  unit,
+  onChangeValue,
+  min,
+  max,
+  logScale = false,
+  formatValue,
+  disabled = false,
+}: DragFieldProps) {
+  const pointerStart = useRef<{ y: number; value: number } | null>(null)
+  const fmt = formatValue ?? ((v: number) => String(v))
+
+  function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (disabled) return
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    pointerStart.current = { y: e.clientY, value }
+  }
+
+  function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (!pointerStart.current || disabled) return
+    const deltaY = pointerStart.current.y - e.clientY
+    let newValue: number
+    if (logScale) {
+      newValue = pointerStart.current.value * Math.pow(1.005, deltaY)
+    } else {
+      const sensitivity = (max - min) / 150
+      newValue = pointerStart.current.value + deltaY * sensitivity
+    }
+    onChangeValue(Math.max(min, Math.min(max, newValue)))
+  }
+
+  function onPointerUp() {
+    pointerStart.current = null
+  }
+
+  return (
+    <div
+      className={cn(
+        'flex-1 min-w-0 bg-slider-track rounded-lg px-2 py-1.5 flex flex-col gap-0.5 select-none',
+        disabled ? 'opacity-40' : 'cursor-ns-resize active:bg-accent/10',
+      )}
+      style={{ touchAction: 'none' }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+    >
+      <span className="text-[10px] text-text-secondary leading-none">{label}</span>
+      <span className="text-xs font-semibold text-text-primary leading-tight whitespace-nowrap overflow-hidden text-ellipsis">
+        {fmt(value)}
+        {unit && <span className="font-normal text-text-secondary ml-0.5">{unit}</span>}
+      </span>
+    </div>
+  )
+}
+
+function LegendItem({
+  color,
+  label,
+  muted = false,
+}: {
+  color: string
+  label: string
+  muted?: boolean
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span
+        className="inline-block w-6 h-0.5 rounded-full"
+        style={{ backgroundColor: color, opacity: muted ? 0.6 : 1 }}
+      />
+      <span className="text-xs text-text-secondary">{label}</span>
+    </div>
   )
 }
