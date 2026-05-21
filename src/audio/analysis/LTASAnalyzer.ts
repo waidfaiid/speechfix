@@ -96,30 +96,41 @@ function buildBinToGrid(sampleRate: number): Int32Array {
 // ---------------------------------------------------------------------------
 
 /**
- * Analyze the full audio file and return a 512-point LTAS (dB, log-freq grid).
+ * Analyze an audio source and return a 512-point LTAS (dB, log-freq grid).
+ * Accepts an already-decoded AudioBuffer (preferred, avoids a second full decode)
+ * or a raw File (will be decoded here as a fallback).
  * Reports progress via onProgress (0–1).
  */
 export async function analyzeLTAS(
-  file: File,
+  source: AudioBuffer | File,
   onProgress?: (p: number) => void
 ): Promise<Float32Array> {
-  // Decode audio to PCM
-  const arrayBuffer = await file.arrayBuffer()
-  const tmpCtx = new AudioContext()
-  const audioBuffer = await tmpCtx.decodeAudioData(arrayBuffer)
-  await tmpCtx.close()
+  let audioBuffer: AudioBuffer
+  if (source instanceof AudioBuffer) {
+    audioBuffer = source
+  } else {
+    const arrayBuffer = await source.arrayBuffer()
+    const tmpCtx = new AudioContext()
+    audioBuffer = await tmpCtx.decodeAudioData(arrayBuffer)
+    await tmpCtx.close()
+  }
 
-  // Mix down to mono
+  // Mix down to mono.
+  // For mono files: use getChannelData(0) directly — no 617 MB copy needed.
   const sampleRate = audioBuffer.sampleRate
   const numChannels = audioBuffer.numberOfChannels
   const length = audioBuffer.length
-  const mono = new Float32Array(length)
-  for (let ch = 0; ch < numChannels; ch++) {
-    const channelData = audioBuffer.getChannelData(ch)
-    for (let n = 0; n < length; n++) {
-      mono[n] += channelData[n] / numChannels
-    }
-  }
+  const mono: Float32Array = numChannels === 1
+    ? audioBuffer.getChannelData(0)
+    : (() => {
+        const m = new Float32Array(length)
+        for (let ch = 0; ch < numChannels; ch++) {
+          const chData = audioBuffer.getChannelData(ch)
+          for (let n = 0; n < length; n++) m[n] += chData[n]
+        }
+        for (let n = 0; n < length; n++) m[n] /= numChannels
+        return m
+      })()
 
   const binToGrid = buildBinToGrid(sampleRate)
   const gridSum = new Float64Array(GRID_POINTS)

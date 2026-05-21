@@ -69,6 +69,9 @@ function buildReferenceLTAS(): Float32Array {
 
 export const SPEECH_REFERENCE_LTAS: Float32Array = buildReferenceLTAS()
 
+/** Flat reference (all-zero relative dB) — no spectral shaping applied. Used for mixed content. */
+export const FLAT_REFERENCE_LTAS: Float32Array = new Float32Array(512)
+
 /** Frequency in Hz for grid index i */
 export function gridFreq(i: number): number {
   return MIN_FREQ * Math.pow(MAX_FREQ / MIN_FREQ, i / (GRID_POINTS - 1))

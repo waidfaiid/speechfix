@@ -11,6 +11,8 @@ interface AudioStore {
   abMode: 'original' | 'processed'
   ffmpegLoaded: boolean
   ffmpegLoadProgress: number
+  trimStart: number
+  trimEnd: number | null
 
   setContextState: (s: AudioContextState) => void
   setIsPlaying: (v: boolean) => void
@@ -21,6 +23,8 @@ interface AudioStore {
   setAbMode: (m: 'original' | 'processed') => void
   setFfmpegLoaded: (v: boolean) => void
   setFfmpegLoadProgress: (p: number) => void
+  setTrimStart: (t: number) => void
+  setTrimEnd: (t: number | null) => void
 }
 
 export const useAudioStore = create<AudioStore>((set) => ({
@@ -33,6 +37,8 @@ export const useAudioStore = create<AudioStore>((set) => ({
   abMode: 'processed',
   ffmpegLoaded: false,
   ffmpegLoadProgress: 0,
+  trimStart: 0,
+  trimEnd: null,
 
   setContextState: (s) => set({ contextState: s }),
   setIsPlaying: (v) => set({ isPlaying: v }),
@@ -43,4 +49,6 @@ export const useAudioStore = create<AudioStore>((set) => ({
   setAbMode: (m) => set({ abMode: m }),
   setFfmpegLoaded: (v) => set({ ffmpegLoaded: v }),
   setFfmpegLoadProgress: (p) => set({ ffmpegLoadProgress: p }),
+  setTrimStart: (t) => set({ trimStart: t }),
+  setTrimEnd: (t) => set({ trimEnd: t }),
 }))

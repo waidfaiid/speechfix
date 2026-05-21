@@ -15,9 +15,11 @@ import { useEffect, useRef } from 'react'
 import { useFileStore } from '@/store/useFileStore'
 import { useProcessingStore } from '@/store/useProcessingStore'
 import { useUIStore } from '@/store/useUIStore'
+import { audioEngine } from '@/audio/AudioEngine'
 import { analyzeLTAS } from '@/audio/analysis/LTASAnalyzer'
 import { computeEQCorrection } from '@/utils/eqMatcher'
 import { normalizeLTAS, freqToGridIndex, gridFreq } from '@/utils/speechReferenceLTAS'
+import type { ContentType } from '@/types/processing.types'
 
 const SIBILANCE_LO_HZ = 5000
 const SIBILANCE_HI_HZ = 12000
@@ -55,6 +57,7 @@ export function useLTASAnalysis() {
   const {
     referenceLTAS,
     eqBands,
+    contentType,
     setMeasuredLTAS,
     setEqBands,
     setAnalysisStatus,
@@ -69,6 +72,25 @@ export function useLTASAnalysis() {
   useEffect(() => { eqBandsRef.current = eqBands }, [eqBands])
 
   const referenceLTASRef = useRef(referenceLTAS)
+  // Keep reference in sync whenever content type changes the store's referenceLTAS
+  useEffect(() => { referenceLTASRef.current = referenceLTAS }, [referenceLTAS])
+
+  // Re-apply EQ correction when content type changes (if a file is already analyzed)
+  const prevContentTypeRef = useRef<ContentType>(contentType)
+  const isFirstContentTypeRun = useRef(true)
+  useEffect(() => {
+    if (isFirstContentTypeRun.current) {
+      isFirstContentTypeRun.current = false
+      return
+    }
+    if (prevContentTypeRef.current === contentType) return
+    prevContentTypeRef.current = contentType
+    const state = useProcessingStore.getState()
+    if (!state.measuredLTAS) return
+    const correctedBands = computeEQCorrection(state.measuredLTAS, state.referenceLTAS, eqBandsRef.current)
+    setEqBands(correctedBands)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contentType])
 
   useEffect(() => {
     if (!activeFile) {
@@ -79,13 +101,15 @@ export function useLTASAnalysis() {
 
     let cancelled = false
 
-    async function run() {
-      setAnalysisStatus('running')
-      setAnalysisProgress(0)
-      setMeasuredLTAS(null)
+    setAnalysisStatus('running')
+    setAnalysisProgress(0)
+    setMeasuredLTAS(null)
 
+    async function run(buffer: AudioBuffer) {
+      if (cancelled) return
       try {
-        const ltas = await analyzeLTAS(activeFile!.file, (p) => {
+        // Use the already-decoded buffer from AudioEngine — no second decode needed.
+        const ltas = await analyzeLTAS(buffer, (p) => {
           if (!cancelled) setAnalysisProgress(p)
         })
 
@@ -128,9 +152,15 @@ export function useLTASAnalysis() {
       }
     }
 
-    run()
+    // Wait for AudioEngine to finish decoding, then reuse its buffer.
+    audioEngine.setOnFileLoaded((buffer) => {
+      if (!cancelled) run(buffer)
+    })
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      audioEngine.setOnFileLoaded(null)
+    }
   // Re-run only when the active file identity changes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeFile?.id])

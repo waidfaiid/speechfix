@@ -50,9 +50,9 @@ function isQualityDisabled(quality: ExportQuality, ceiling: ExportQuality): bool
 }
 
 export function ExportPanel() {
-  const { exportOptions, setExportOptions, getParams } = useProcessingStore()
+  const { exportOptions, setExportOptions, getParams, humNoiseProfile } = useProcessingStore()
   const { files, updateFile, setExportProgress, setIsExporting } = useFileStore()
-  const { ffmpegLoaded } = useAudioStore()
+  const { ffmpegLoaded, trimStart, trimEnd } = useAudioStore()
   const { addToast } = useUIStore()
 
   const activeFile = useFileStore((s) => s.getActiveFile())
@@ -81,6 +81,7 @@ export function ExportPanel() {
 
     setIsExporting(true)
     const params = getParams()
+    const noiseProfile = params.humAutoMode && params.humDetectedFreqs.length > 0 ? humNoiseProfile : null
     const zip = filesToExport.length > 1 ? new JSZip() : null
     const blobs: { name: string; blob: Blob }[] = []
 
@@ -102,6 +103,8 @@ export function ExportPanel() {
           ...exportOptions,
           filename: f.name.replace(/\.[^.]+$/, ''),
           normalizeToLUFS: params.limiterTarget,
+          trimStart: trimStart > 0 ? trimStart : undefined,
+          trimEnd: trimEnd !== null ? trimEnd : undefined,
         }, (p) => {
           setExportProgress({
             fileId: f.id,
@@ -112,7 +115,7 @@ export function ExportPanel() {
             stepLabel: p < 30 ? 'Lautheit messen…' : p < 90 ? 'Filter & Limiter anwenden…' : 'Wird abgeschlossen…',
             estimatedSecondsLeft: 0,
           })
-        })
+        }, noiseProfile)
 
         const outName = `${f.name.replace(/\.[^.]+$/, '')}_fixed.${exportOptions.format}`
         updateFile(f.id, { status: 'done', outputBlob: blob })

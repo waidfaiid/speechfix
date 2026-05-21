@@ -18,16 +18,17 @@ interface ProcessingSliderProps {
   action?: ReactNode
   /** Rendered between displayValue and the toggle switch (e.g. a dropdown) */
   rightAddon?: ReactNode
+  title?: string
 }
 
 export function ProcessingSlider({
   label, icon, value, onChange, enabled = true, onToggle,
-  displayValue, min = 0, max = 1, step = 0.01, children, action, rightAddon,
+  displayValue, min = 0, max = 1, step = 0.01, children, action, rightAddon, title,
 }: ProcessingSliderProps) {
   const pct = Math.round(((value - min) / (max - min)) * 100)
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" title={title}>
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="text-text-secondary">{icon}</span>

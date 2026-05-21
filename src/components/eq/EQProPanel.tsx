@@ -5,6 +5,7 @@ import { useProcessingStore } from '@/store/useProcessingStore'
 import { useUIStore } from '@/store/useUIStore'
 import { useFileStore } from '@/store/useFileStore'
 import { EQGraph } from './EQGraph'
+import { audioEngine } from '@/audio/AudioEngine'
 import { analyzeLTAS } from '@/audio/analysis/LTASAnalyzer'
 import { computeEQCorrection } from '@/utils/eqMatcher'
 import * as RadixSwitch from '@radix-ui/react-switch'
@@ -42,7 +43,8 @@ export function EQProPanel() {
     setAnalysisProgress(0)
     setMeasuredLTAS(null)
     try {
-      const ltas = await analyzeLTAS(activeFile.file, (p) => setAnalysisProgress(p))
+      const source = audioEngine.loadedBuffer ?? activeFile.file
+      const ltas = await analyzeLTAS(source, (p) => setAnalysisProgress(p))
       setMeasuredLTAS(ltas)
       const corrected = computeEQCorrection(ltas, referenceLTAS, eqBands)
       setEqBands(corrected)
