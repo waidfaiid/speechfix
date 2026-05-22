@@ -232,31 +232,6 @@ export function ProcessingPanel() {
           enabled={store.noiseEnabled}
           onToggle={store.setNoiseEnabled}
           displayValue={`${Math.round(store.noiseAmount * 100)}%`}
-          rightAddon={store.noiseEnabled ? (
-            <div
-              className="flex items-center gap-1"
-              title="Latenz ausgleichen"
-            >
-              <span className="text-[9px] text-text-secondary whitespace-nowrap mr-0.5">Latenz</span>
-              <button
-                type="button"
-                onClick={() => store.setDtlnLatencyMs(store.dtlnLatencyMs - 0.1)}
-                className="w-5 h-5 flex items-center justify-center rounded text-text-secondary hover:text-text-primary hover:bg-slider-track transition-colors text-xs font-bold leading-none"
-              >
-                −
-              </button>
-              <span className="text-[11px] tabular-nums text-text-primary w-12 text-center">
-                {(store.dtlnLatencyMs - 48).toFixed(1)} ms
-              </span>
-              <button
-                type="button"
-                onClick={() => store.setDtlnLatencyMs(store.dtlnLatencyMs + 0.1)}
-                className="w-5 h-5 flex items-center justify-center rounded text-text-secondary hover:text-text-primary hover:bg-slider-track transition-colors text-xs font-bold leading-none"
-              >
-                +
-              </button>
-            </div>
-          ) : undefined}
         />
 
         {/* EQ */}
@@ -308,19 +283,24 @@ export function ProcessingPanel() {
           displayValue={`${Math.round(store.exciterAmount * 100)}%`}
         >
           <div className="flex gap-2 pt-1">
-            {(['brilliance', 'warmth'] as const).map((mode) => (
+            {([
+              { id: 'auto', label: 'Natürlich', sub: 'Wärme + Präsenz' },
+              { id: 'tube', label: 'Wärme', sub: 'Röhre · rund & körperreich' },
+              { id: 'tape', label: 'Präsenz', sub: 'Band · klar & durchsetzend' },
+            ] as const).map(({ id, label, sub }) => (
               <button
-                key={mode}
+                key={id}
                 type="button"
-                onClick={() => store.setExciterMode(mode)}
+                onClick={() => store.setExciterMode(id)}
                 className={cn(
-                  'flex-1 py-1.5 rounded-pill text-xs font-medium transition-colors',
-                  store.exciterMode === mode
+                  'flex-1 py-1.5 px-1 rounded-pill transition-colors text-center',
+                  store.exciterMode === id
                     ? 'bg-accent/20 text-accent border border-accent/30'
                     : 'bg-slider-track text-text-secondary hover:text-text-primary',
                 )}
               >
-                {mode === 'brilliance' ? 'Höhen' : 'Wärme'}
+                <span className="block text-xs font-medium leading-tight">{label}</span>
+                <span className="block text-[10px] leading-tight opacity-70 mt-0.5">{sub}</span>
               </button>
             ))}
           </div>

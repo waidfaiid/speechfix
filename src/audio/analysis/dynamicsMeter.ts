@@ -33,15 +33,18 @@ function percentile(sorted: number[], p: number): number {
 }
 
 function mixToMono(buffer: AudioBuffer): Float32Array {
+  // For mono files return the channel data directly — no copy needed.
+  // All call-sites either read the data or pass it to decimateMono()
+  // which always creates its own new Float32Array, so this is safe.
+  if (buffer.numberOfChannels === 1) return buffer.getChannelData(0)
+
   const { length, numberOfChannels } = buffer
   const mono = new Float32Array(length)
   for (let ch = 0; ch < numberOfChannels; ch++) {
     const data = buffer.getChannelData(ch)
     for (let i = 0; i < length; i++) mono[i] += data[i]
   }
-  if (numberOfChannels > 1) {
-    for (let i = 0; i < length; i++) mono[i] /= numberOfChannels
-  }
+  for (let i = 0; i < length; i++) mono[i] /= numberOfChannels
   return mono
 }
 

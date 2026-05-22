@@ -18,7 +18,7 @@ export interface EQBand {
   enabled: boolean
 }
 
-export type ExciterMode = 'brilliance' | 'warmth'
+export type ExciterMode = 'auto' | 'tube' | 'tape'
 
 export interface AudioAnalysis {
   lufs: number

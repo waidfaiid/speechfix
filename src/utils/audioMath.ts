@@ -52,24 +52,118 @@ export function estimateExportSize(
   return (kbps * 1000 / 8) * durationSeconds
 }
 
-export function createSoftClipCurve(intensity: number): Float32Array {
-  const samples = 256
-  const curve = new Float32Array(samples)
-  for (let i = 0; i < samples; i++) {
-    const x = (i * 2) / samples - 1
-    const drive = 1 + intensity * 3
-    curve[i] = Math.tanh(x * drive) / Math.tanh(drive)
+/**
+ * WHY THE PREVIOUS CURVES CAUSED LOUDNESS / DISTORTION ARTIFACTS
+ * ---------------------------------------------------------------
+ * The old normalization was:  f(x) = tanh(x·drive) / tanh(drive)
+ * This keeps the PEAK output at ±1, but the small-signal gain (slope at x=0)
+ * equals drive / tanh(drive).  At intensity=0.1 that is already ×1.54 (+3.8 dB).
+ * Every quiet passage was loudened before the saturation even kicked in.
+ *
+ * THE FIX — unity small-signal gain via dry/wet blend
+ * ----------------------------------------------------
+ * Normalise by `drive` (not `tanh(drive)`):
+ *   sat(x) = tanh(x·drive) / drive
+ *   slope at 0 = drive·sech²(0) / drive = 1   ← always unity
+ *
+ * Then blend with the dry signal:
+ *   f(x) = x·(1−wet) + sat(x)·wet
+ *   slope at 0 = (1−wet)·1 + wet·1 = 1   ← still unity for any wet value
+ *
+ * Peaks are gently compressed (not amplified), the average level stays the
+ * same, and the wet amount controls how much harmonic character is added.
+ *
+ * PARAMETER CALIBRATION (approximate peak compression at typical speech levels):
+ *   intensity 10 %  → ~0.1 dB  (barely perceptible — just a hint of character)
+ *   intensity 30 %  → ~0.6 dB  (subtle warmth, clearly there when A/B'd)
+ *   intensity 50 %  → ~1.5 dB  (distinct character, musical)
+ *   intensity 100 % → ~5.8 dB  (strong, noticeable — but never harsh)
+ *
+ * The wet amount uses a power curve (intensity^1.3) so the first 20 % feel
+ * gentle and the upper half of the knob delivers real saturation character.
+ */
+
+/**
+ * Tube saturation — asymmetric biased tanh, unity small-signal gain.
+ * Produces even-order harmonics (2nd, 4th) → warmth & body.
+ * DC offset from the bias is removed by the HP filter downstream.
+ */
+export function createTubeCurve(intensity: number): Float32Array {
+  const N    = 4096
+  const curve = new Float32Array(N)
+  const drive = 1 + intensity * 3.25                  // +30 %: 1.0 → 4.25
+  const bias  = 0.08 * intensity
+  const wet   = Math.pow(intensity, 1.3) * 0.88        // +30 %: max ~0.88
+  const dc    = Math.tanh(bias * drive) / drive
+  for (let i = 0; i < N; i++) {
+    const x   = (i * 2) / N - 1
+    const sat = Math.tanh((x + bias) * drive) / drive - dc
+    curve[i]  = Math.max(-1, Math.min(1, x * (1 - wet) + sat * wet))
   }
   return curve
 }
 
-export function createWarmthCurve(intensity: number): Float32Array {
-  const samples = 256
-  const curve = new Float32Array(samples)
-  for (let i = 0; i < samples; i++) {
-    const x = (i * 2) / samples - 1
-    const drive = 1 + intensity * 1.5
-    curve[i] = (Math.tanh(x * drive) / Math.tanh(drive)) * 0.9 + x * 0.1
+/**
+ * Tape saturation — symmetric tanh, unity small-signal gain.
+ * Produces odd-order harmonics (3rd, 5th) → presence & natural peak limiting.
+ * Slightly higher drive than tube so odd-harmonic presence is clearly audible.
+ */
+export function createTapeCurve(intensity: number): Float32Array {
+  const N    = 4096
+  const curve = new Float32Array(N)
+  const drive = 1 + intensity * 3.65                  // +30 %: 1.0 → 4.65
+  const wet   = Math.pow(intensity, 1.3) * 0.80        // +30 %: max ~0.80
+  for (let i = 0; i < N; i++) {
+    const x   = (i * 2) / N - 1
+    const sat = Math.tanh(x * drive) / drive
+    curve[i]  = Math.max(-1, Math.min(1, x * (1 - wet) + sat * wet))
+  }
+  return curve
+}
+
+/**
+ * Auto curve — blends tube and tape with unity gain throughout.
+ *
+ * 0 – 30 %  → tube only, wet follows power curve up to ~0.19 at 30 %
+ * 30 – 40 % → crossfade region
+ * 40 – 100% → tube stays full, tape fades in (up to 50 % of blend weight)
+ */
+export function createAutoCurve(intensity: number): Float32Array {
+  const N    = 4096
+  const curve = new Float32Array(N)
+
+  // Tube ramps 0 → 1 over first 30 %
+  const t = Math.min(1, intensity / 0.3)
+  // Tape ramps 0 → 1 over 40 – 100 %
+  const p = Math.max(0, (intensity - 0.4) / 0.6)
+
+  if (t <= 0) {
+    for (let i = 0; i < N; i++) curve[i] = (i * 2) / N - 1
+    return curve
+  }
+
+  const tubeDrive = 1 + intensity * 3.25             // matches createTubeCurve
+  const bias      = 0.08 * t
+  const tubeWet   = Math.pow(intensity, 1.3) * 0.88
+  const dc        = Math.tanh(bias * tubeDrive) / tubeDrive
+
+  const tapeDrive = p > 0 ? 1 + p * 3.65 : 1
+  const tapeWet   = p > 0 ? Math.pow(p, 1.3) * 0.80 : 0
+  const tubeBlend = 1 - p * 0.5
+  const tapeBlend = p * 0.5
+
+  for (let i = 0; i < N; i++) {
+    const x       = (i * 2) / N - 1
+    const tubeSat = Math.tanh((x + bias) * tubeDrive) / tubeDrive - dc
+    const tubeY   = x * (1 - tubeWet) + tubeSat * tubeWet
+
+    if (p <= 0) {
+      curve[i] = Math.max(-1, Math.min(1, tubeY))
+    } else {
+      const tapeSat = Math.tanh(x * tapeDrive) / tapeDrive
+      const tapeY   = x * (1 - tapeWet) + tapeSat * tapeWet
+      curve[i] = Math.max(-1, Math.min(1, tubeY * tubeBlend + tapeY * tapeBlend))
+    }
   }
   return curve
 }

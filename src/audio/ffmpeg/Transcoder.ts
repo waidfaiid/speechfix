@@ -2,8 +2,8 @@ import { ffmpegManager } from './FFmpegManager'
 import { audioContextManager } from '../AudioContextManager'
 import type { ProcessingParams, ExportOptions } from '@/types/processing.types'
 import type { BiquadFilterType } from '@/types/audio.types'
-import type { createNoiseSuppressionModule as CreateModuleFn } from '@workadventure/noise-suppression'
 import { applySpectralSubtraction } from '../analysis/HumAnalyzer'
+import { DYNAMICS_WORKING_LEVEL_LUFS } from '../analysis/dynamicsMeter'
 
 const QUALITY_BITRATE: Record<string, Record<string, string>> = {
   mp3:  { low: '96k',  medium: '192k', high: '320k',  lossless: '320k' },
@@ -167,7 +167,7 @@ function buildWebAudioBiquadFilter(
  */
 /**
  * @param skipHumAndEQ – pass `true` when hum removal and EQ have already been
- *   applied offline (via applyPreFiltersOffline) before DTLN processing.
+ *   applied offline (via applyPreFiltersOffline) before RNNoise processing.
  *   In that case FFmpeg only needs the aresample guard; applying hum/EQ a
  *   second time would double the correction.
  */
@@ -211,7 +211,7 @@ function buildPreDeEsserFilters(params: ProcessingParams, skipHumAndEQ = false):
     }
   }
 
-  // Noise reduction is handled by DTLN pre-processing in exportFile() before
+  // Noise reduction is handled by RNNoise pre-processing in exportFile() before
   // FFmpeg sees the audio; no FFmpeg filter needed here.
 
   return filters
@@ -240,34 +240,109 @@ function buildCompressionFilters(params: ProcessingParams): string[] {
   const ratio = (2 + amount * 3).toFixed(1)
   const release = Math.round(250 + amount * 550)
 
+  // knee=8 is the maximum FFmpeg allows (Web Audio defaults to 30 dB, but 8 is
+  // the best available approximation — wider knee = softer onset = more signal
+  // reaches the exciter, matching the preview's gentle compression behaviour).
   return [
-    `acompressor=threshold=${s1ThreshLin}:ratio=${s1Ratio}:attack=3:release=50:knee=1`,
-    `acompressor=threshold=${s2ThreshLin}:ratio=${ratio}:attack=25:release=${release}:knee=6`,
+    `acompressor=threshold=${s1ThreshLin}:ratio=${s1Ratio}:attack=3:release=50:knee=8`,
+    `acompressor=threshold=${s2ThreshLin}:ratio=${ratio}:attack=25:release=${release}:knee=8`,
   ]
 }
 
 /**
  * Filters applied AFTER the de-esser: harmonic exciter only.
+ *
+ * Mirrors audioMath.ts exactly.  All three modes use a dry/wet blend that
+ * keeps unity small-signal gain (quiet passages are not amplified):
+ *
+ *   sat(x) = tanh(x·drive) / drive   ← slope at x=0 is always 1
+ *   f(x)   = x·(1−wet) + sat(x)·wet  ← still slope 1 for any wet value
+ *
+ * All constants are pre-computed from the fixed params.exciterAmount value
+ * so the aeval expression contains only numeric literals.
  */
 function buildPostDeEsserFilters(params: ProcessingParams): string[] {
   const filters: string[] = []
+  if (!params.exciterEnabled || params.exciterAmount <= 0) return filters
 
-  // Exciter: tanh waveshaping — mirrors AudioEngine.ts WaveShaper (after compressor)
-  if (params.exciterEnabled && params.exciterAmount > 0) {
-    if (params.exciterMode === 'warmth') {
-      // createWarmthCurve: drive = 1 + (amount*0.5)*1.5; out = 0.9*tanh(x*drive)/tanh(drive) + 0.1*x
-      // val(ch) is the sample for the current channel — correct for mono and stereo
-      const drive = (1 + params.exciterAmount * 0.5 * 1.5).toFixed(4)
-      const tanhDrive = Math.tanh(parseFloat(drive)).toFixed(6)
-      filters.push(`aeval=0.9*tanh(val(ch)*${drive})/${tanhDrive}+0.1*val(ch):c=same`)
+  const amount = params.exciterAmount
+  // Pre-drive boost: the Web Audio DynamicsCompressorNode's lookahead and
+  // gain-smoothing behaviour leaves the signal effectively louder at the
+  // WaveShaperNode input than the raw compressed signal would suggest.
+  // A +4 dB boost here (matched by −4 dB after the waveshaper) replicates
+  // that effective drive level, producing equivalent harmonic saturation.
+  // The net gain through this section remains 0 dB; only the tanh drive increases.
+  const DRIVE_BOOST_DB = 4.0
+  filters.push(`volume=${DRIVE_BOOST_DB}dB`)
+
+  // 4× oversampling mirrors Web Audio WaveShaperNode oversample='4x'.
+  // Upsampling reconstructs the continuous-time signal, revealing inter-sample
+  // peaks (typically 1–3 dB higher than digital peaks) that the tanh processes
+  // exactly as the browser's waveshaper does.  The downsample at the end applies
+  // an anti-aliasing filter that matches the browser's behaviour.
+  const OVERSAMPLE_RATE = PREVIEW_SAMPLE_RATE * 4 // 192 000 Hz
+  filters.push(`aresample=${OVERSAMPLE_RATE}`)
+
+  if (params.exciterMode === 'tube') {
+    // Mirrors createTubeCurve exactly.
+    // DC offset (dc) is cancelled analytically inside the expression.
+    const drive = 1 + amount * 3.25
+    const bias  = 0.08 * amount
+    const wet   = Math.pow(amount, 1.3) * 0.88
+    const dc    = Math.tanh(bias * drive) / drive
+    const dry   = 1 - wet
+    // f(x) = x·dry + (tanh((x+bias)·drive)/drive − dc)·wet
+    filters.push(
+      `aeval=val(ch)*${dry.toFixed(6)}+(tanh((val(ch)+${bias.toFixed(6)})*${drive.toFixed(6)})/${drive.toFixed(6)}-${dc.toFixed(6)})*${wet.toFixed(6)}:c=same`,
+    )
+
+  } else if (params.exciterMode === 'tape') {
+    // Mirrors createTapeCurve exactly.
+    const drive = 1 + amount * 3.65
+    const wet   = Math.pow(amount, 1.3) * 0.80
+    const dry   = 1 - wet
+    // f(x) = x·dry + tanh(x·drive)/drive·wet
+    filters.push(
+      `aeval=val(ch)*${dry.toFixed(6)}+tanh(val(ch)*${drive.toFixed(6)})/${drive.toFixed(6)}*${wet.toFixed(6)}:c=same`,
+    )
+
+  } else {
+    // Mirrors createAutoCurve: tube (0–30 %) + tape blends in (40–100 %)
+    // DC is cancelled analytically in the tube term (- dcCorr).
+    const t = Math.min(1, amount / 0.3)
+    const p = Math.max(0, (amount - 0.4) / 0.6)
+
+    const tubeDrive = 1 + amount * 3.25
+    const bias      = 0.08 * t
+    const tubeWet   = Math.pow(amount, 1.3) * 0.88
+    const dc        = Math.tanh(bias * tubeDrive) / tubeDrive
+    const tubeBlend = 1 - p * 0.5
+    const tapeBlend = p * 0.5
+
+    if (p <= 0) {
+      // Only tube path
+      const dry = 1 - tubeWet
+      filters.push(
+        `aeval=val(ch)*${dry.toFixed(6)}+(tanh((val(ch)+${bias.toFixed(6)})*${tubeDrive.toFixed(6)})/${tubeDrive.toFixed(6)}-${dc.toFixed(6)})*${tubeWet.toFixed(6)}:c=same`,
+      )
     } else {
-      // createSoftClipCurve (brilliance): drive = 1 + (amount*0.4)*3; out = tanh(x*drive)/tanh(drive)
-      const drive = (1 + params.exciterAmount * 0.4 * 3).toFixed(4)
-      const tanhDrive = Math.tanh(parseFloat(drive)).toFixed(6)
-      filters.push(`aeval=tanh(val(ch)*${drive})/${tanhDrive}:c=same`)
+      // Tube + tape blend — expand into a single aeval pass
+      const tapeDrive    = 1 + p * 3.65
+      const tapeWet      = Math.pow(p, 1.3) * 0.80
+      const xCoeff       = ((1 - tubeWet) * tubeBlend + (1 - tapeWet) * tapeBlend).toFixed(6)
+      const tubeSatCoeff = (tubeWet * tubeBlend).toFixed(6)
+      const tapeSatCoeff = (tapeWet * tapeBlend).toFixed(6)
+      const dcCorr       = (dc * tubeWet * tubeBlend).toFixed(6)
+      const tubeExpr = `tanh((val(ch)+${bias.toFixed(6)})*${tubeDrive.toFixed(6)})/${tubeDrive.toFixed(6)}*${tubeSatCoeff}`
+      const tapeExpr = `tanh(val(ch)*${tapeDrive.toFixed(6)})/${tapeDrive.toFixed(6)}*${tapeSatCoeff}`
+      filters.push(`aeval=val(ch)*${xCoeff}+${tubeExpr}+${tapeExpr}-${dcCorr}:c=same`)
     }
   }
 
+  // Downsample back to the working sample rate after oversampled processing.
+  filters.push(`aresample=${PREVIEW_SAMPLE_RATE}`)
+  // Compensate the pre-drive boost — net gain through the exciter block = 0 dB.
+  filters.push(`volume=${-DRIVE_BOOST_DB}dB`)
   return filters
 }
 
@@ -380,47 +455,6 @@ export function buildProcessingChain(params: ProcessingParams): string {
 }
 
 // ---------------------------------------------------------------------------
-// DTLN pre-processing helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Downsample a Float32Array from 48 kHz to 16 kHz (3:1 integer ratio).
- * Uses a simple 3-sample averaging FIR which attenuates aliasing sufficiently
- * for speech denoising (DTLN only uses content up to 8 kHz anyway).
- */
-function downsample3x(input: Float32Array): Float32Array {
-  const outLen = Math.floor(input.length / 3)
-  const output = new Float32Array(outLen)
-  for (let i = 0; i < outLen; i++) {
-    output[i] = (input[i * 3] + input[i * 3 + 1] + input[i * 3 + 2]) / 3
-  }
-  return output
-}
-
-/**
- * Upsample a Float32Array from 16 kHz back to 48 kHz (1:3 integer ratio)
- * using linear interpolation between adjacent samples.
- */
-function upsample3x(input: Float32Array, targetLen: number): Float32Array {
-  const output = new Float32Array(targetLen)
-  for (let i = 0; i < input.length - 1; i++) {
-    const s0 = input[i]
-    const s1 = input[i + 1]
-    const base = i * 3
-    if (base     < targetLen) output[base]     = s0
-    if (base + 1 < targetLen) output[base + 1] = s0 + (s1 - s0) / 3
-    if (base + 2 < targetLen) output[base + 2] = s0 + (2 * (s1 - s0)) / 3
-  }
-  // Repeat the last sample for the tail.
-  if (input.length > 0) {
-    const last = input[input.length - 1]
-    const base = (input.length - 1) * 3
-    if (base     < targetLen) output[base]     = last
-    if (base + 1 < targetLen) output[base + 1] = last
-    if (base + 2 < targetLen) output[base + 2] = last
-  }
-  return output
-}
 
 /**
  * Encode an AudioBuffer as a 32-bit float WAV (IEEE PCM, format 3).
@@ -468,7 +502,7 @@ function audioBufferToWavBytes(buffer: AudioBuffer): Uint8Array {
  * Apply hum removal and EQ correction offline using OfflineAudioContext.
  *
  * This mirrors exactly what AudioEngine does in the preview signal chain so
- * that the DTLN denoiser receives a spectrally corrected signal in exports —
+ * that the RNNoise denoiser receives a spectrally corrected signal in exports —
  * the model was trained on balanced speech and produces artefacts when the
  * input has an abnormal frequency response (e.g. extreme low-mid buildup
  * from a thin or coloured room microphone).
@@ -536,94 +570,95 @@ async function applyPreFiltersOffline(
   return offCtx.startRendering()
 }
 
-/** Cached DTLN module so the WASM is only initialised once per session. */
-let _dtlnModule: Awaited<ReturnType<typeof CreateModuleFn>> | null = null
-
 /**
- * Apply DTLN speech denoising to every channel of an AudioBuffer.
+ * Apply RNNoise speech denoising to every channel of an AudioBuffer.
  *
- * The model runs at 16 kHz / mono per channel.  Each channel is individually:
- *   1. Downsampled 3:1 (48 → 16 kHz, simple averaging anti-alias)
- *   2. Processed frame-by-frame through dtln_denoise() (512-sample frames)
- *   3. Upsampled 1:3 back (16 → 48 kHz, linear interpolation)
- *   4. Mixed with the original via `noiseAmount` (0 = dry, 1 = full DTLN)
- *
- * `latencyMs` is the TOTAL preview latency (ring-buffer + model).  In the
- * offline export there is no ring-buffer, so only the model's own group delay
- * needs compensation.  The ring-buffer contribution (DTLN_RING_BUFFER_MS) is
- * subtracted here to obtain the model-only offset.
+ * RNNoise operates at 48 kHz natively — no resampling artefacts.
+ * Each channel is processed independently through the WASM at full resolution
+ * and mixed with the original via `noiseAmount` (0 = dry, 1 = full RNNoise).
  *
  * @returns A new AudioBuffer at the same sample rate / channel count / length.
  */
-async function applyDtlnDenoising(
+/** Compiled RNNoise WASM module — loaded once and reused for every export. */
+let _rnnoiseModule: WebAssembly.Module | null = null
+
+/**
+ * Apply RNNoise speech denoising to every channel of an AudioBuffer.
+ *
+ * Strategy:
+ *  1. Each channel is rendered at 100 % wet through an OfflineAudioContext +
+ *     AudioWorklet (exactly the same worklet as the live preview).
+ *  2. The pure RNNoise output is then mixed with the original in JavaScript
+ *     using sample-accurate latency compensation (delaySamples = latencyMs).
+ *
+ * This two-stage approach avoids putting a DelayNode in the offline graph
+ * (which caused phase-alignment drift at partial mix values) and avoids direct
+ * WASM instantiation in the main thread (which can fail when the module has
+ * environment-specific imports satisfied only inside the AudioWorklet scope).
+ * Channels are processed sequentially to keep resource usage predictable.
+ *
+ * @returns A new AudioBuffer at the same sample rate / channel count / length.
+ */
+async function applyRnnoiseDenoising(
   audioBuffer: AudioBuffer,
   noiseAmount: number,
   latencyMs: number,
 ): Promise<AudioBuffer> {
-  if (!_dtlnModule) {
-    const { createNoiseSuppressionModule } = await import(
-      '@workadventure/noise-suppression'
-    ) as { createNoiseSuppressionModule: typeof CreateModuleFn }
-    // Point the module at the static assets served from public/ so the
-    // LiteRT WASM and tflite models are fetched at runtime, not inlined.
-    _dtlnModule = await createNoiseSuppressionModule({
-      liteRtWasmRoot: '/noise-suppression/vendor/litert/',
-      model1Url: '/noise-suppression/model_quant_1.tflite',
-      model2Url: '/noise-suppression/model_quant_2.tflite',
-    })
-    await _dtlnModule.ready
+  if (!_rnnoiseModule) {
+    const resp = await fetch('/rnnoise.wasm')
+    if (!resp.ok) throw new Error(`rnnoise.wasm fetch failed: ${resp.status}`)
+    _rnnoiseModule = await WebAssembly.compile(await resp.arrayBuffer())
   }
-  const mod = _dtlnModule
 
-  const FRAME = 512
-  const numChannels = audioBuffer.numberOfChannels
-  const numSamples  = audioBuffer.length
-
+  const { numberOfChannels, length, sampleRate } = audioBuffer
+  const delaySamples = Math.round(latencyMs * sampleRate / 1000)
   const outputChannels: Float32Array[] = []
 
-  for (let ch = 0; ch < numChannels; ch++) {
-    const input48 = audioBuffer.getChannelData(ch)
-    const input16  = downsample3x(input48)
+  for (let ch = 0; ch < numberOfChannels; ch++) {
+    const input = audioBuffer.getChannelData(ch)
 
-    const output16 = new Float32Array(input16.length)
-    const handle   = mod.dtln_create()
-    const frameIn  = new Float32Array(FRAME)
-    const frameOut = new Float32Array(FRAME)
+    // ── Stage 1: render 100 % denoised output via OfflineAudioContext ──────
+    const offCtx = new OfflineAudioContext(1, length, sampleRate)
+    await offCtx.audioWorklet.addModule('/rnnoise.worklet.js')
 
-    for (let i = 0; i < input16.length; i += FRAME) {
-      const end = Math.min(i + FRAME, input16.length)
-      frameIn.fill(0)
-      frameIn.set(input16.subarray(i, end), 0)
-      mod.dtln_denoise(handle, frameIn as Float32Array<ArrayBuffer>, frameOut as Float32Array<ArrayBuffer>)
-      output16.set(frameOut.subarray(0, end - i), i)
-    }
+    const chBuf = offCtx.createBuffer(1, length, sampleRate)
+    chBuf.copyToChannel(input as Float32Array<ArrayBuffer>, 0)
+    const source = offCtx.createBufferSource()
+    source.buffer = chBuf
 
-    mod.dtln_stop(handle)
+    const rnnoiseNode = new AudioWorkletNode(offCtx, 'rnnoise', {
+      channelCountMode: 'explicit',
+      channelCount: 1,
+      channelInterpretation: 'speakers',
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: { module: _rnnoiseModule },
+    })
 
-    const output48 = upsample3x(output16, numSamples)
+    source.connect(rnnoiseNode)
+    rnnoiseNode.connect(offCtx.destination)
+    source.start()
 
-    // The offline frame API has no ring-buffer, so only the DTLN model's own
-    // group delay (~16 ms, one STFT hop at 16 kHz) needs compensation.
-    // The preview uses a DelayNode for the full chain latency (ring-buffer
-    // 32 ms + model 16 ms = latencyMs).  Subtracting the ring-buffer gives
-    // the model-only portion that remains in the offline path.
-    const DTLN_RING_BUFFER_MS = 32   // 4 × 128 samples @ 16 kHz
-    const modelDelayMs  = Math.max(0, latencyMs - DTLN_RING_BUFFER_MS)
-    const delaySamples  = Math.round(modelDelayMs * audioBuffer.sampleRate / 1000)
-    const mixed = new Float32Array(numSamples)
-    for (let i = 0; i < numSamples; i++) {
+    const rendered = await offCtx.startRendering()
+    const rnOut = rendered.getChannelData(0)
+
+    // ── Stage 2: sample-accurate dry / wet mix ──────────────────────────────
+    // rnOut[i] is the denoised version of input[i − delaySamples].
+    // Reading rnOut[i + delaySamples] therefore aligns it with input[i].
+    const mixed = new Float32Array(length)
+    for (let i = 0; i < length; i++) {
       const wetIdx = i + delaySamples
-      const wet = wetIdx < numSamples ? output48[wetIdx] : 0
-      mixed[i] = wet * noiseAmount + input48[i] * (1 - noiseAmount)
+      const wet    = wetIdx < length ? rnOut[wetIdx] : 0
+      mixed[i]     = wet * noiseAmount + input[i] * (1 - noiseAmount)
     }
     outputChannels.push(mixed)
   }
 
-  // Build the output AudioBuffer using a one-frame OfflineAudioContext as a
-  // constructor — we only need the createBuffer API, no rendering required.
-  const offCtx = new OfflineAudioContext(numChannels, numSamples, audioBuffer.sampleRate)
-  const outBuf  = offCtx.createBuffer(numChannels, numSamples, audioBuffer.sampleRate)
-  for (let ch = 0; ch < numChannels; ch++) {
+  // Assemble channels into the output AudioBuffer (no rendering, memory only).
+  const assembleCtx = new OfflineAudioContext(numberOfChannels, length, sampleRate)
+  const outBuf = assembleCtx.createBuffer(numberOfChannels, length, sampleRate)
+  for (let ch = 0; ch < numberOfChannels; ch++) {
     outBuf.copyToChannel(outputChannels[ch] as Float32Array<ArrayBuffer>, ch)
   }
   return outBuf
@@ -741,7 +776,7 @@ export async function exportFile(
   const ext = file.name.split('.').pop() ?? 'wav'
   const outputName = `output_${stamp}.${options.format}`
 
-  // ---- JS-side pre-processing (DTLN + optional spectral subtraction) ------
+  // ---- JS-side pre-processing (RNNoise + optional spectral subtraction) ------
   // When noise reduction or spectral subtraction is active we decode the file,
   // run the relevant JS passes, write a 32-bit float WAV to the FFmpeg VFS and
   // set preFiltersApplied so the FFmpeg chain does not re-apply hum/EQ.
@@ -768,8 +803,8 @@ export async function exportFile(
         const rawArrayBuffer = await file.arrayBuffer()
         const decoded = await ctx.decodeAudioData(rawArrayBuffer)
 
-        // Apply hum notch filters + EQ offline before DTLN / spectral subtraction.
-        // The DTLN denoiser was trained on balanced speech — it produces artefacts
+        // Apply hum notch filters + EQ offline before RNNoise / spectral subtraction.
+        // RNNoise was trained on balanced speech — it produces artefacts
         // when fed audio with an abnormal frequency response.
         let processed = await applyPreFiltersOffline(decoded, params)
 
@@ -780,9 +815,9 @@ export async function exportFile(
           processed = await applySpectralSubtractionToBuffer(processed, humNoiseProfile, alpha)
         }
 
-        // DTLN neural denoising (if enabled)
+        // RNNoise neural denoising (if enabled)
         if (params.noiseEnabled && params.noiseAmount > 0) {
-          processed = await applyDtlnDenoising(processed, params.noiseAmount, params.dtlnLatencyMs)
+          processed = await applyRnnoiseDenoising(processed, params.noiseAmount, params.noiseLatencyMs)
         }
 
         const wavBytes = audioBufferToWavBytes(processed)
@@ -808,16 +843,50 @@ export async function exportFile(
   onProgress?.(5)
   const measuredLUFS = await measureSourceLUFS(inputName)
 
+  // When a JS pre-pass applied noise reduction, the denoised audio has a
+  // lower integrated LUFS (the noise floor is gone).  If we derive the
+  // final volume normalisation from the denoised LUFS, FFmpeg applies a
+  // larger gain boost and the speech ends up several dB louder than the
+  // original export.  Instead we measure the original file's LUFS and use
+  // it as the normalization reference so speech level is identical
+  // regardless of whether noise reduction is active.
+  let normRefLUFS = measuredLUFS
+  if (preFiltersApplied && denoisedInputName) {
+    const origRefName = `input_lufsref_${stamp}.${ext}`
+    await ffmpegManager.writeFile(origRefName, file)
+    const origLUFS = await measureSourceLUFS(origRefName)
+    normRefLUFS = origLUFS
+  }
+
+  // Normalize the input to DYNAMICS_WORKING_LEVEL_LUFS before processing so
+  // that the compressor and exciter receive the same signal level as in the
+  // Web Audio preview chain (which also normalises to this working level via
+  // inputNormalizeGain).  Without this, a loud source (+7 dB above working
+  // level) would drive the exciter harder in the export than in the preview,
+  // causing audibly different saturation character.
+  const inputNormDb = DYNAMICS_WORKING_LEVEL_LUFS - normRefLUFS
+  const normVol = Math.abs(inputNormDb) > 0.05
+    ? `volume=${inputNormDb.toFixed(3)}dB`
+    : null
+
   const preFilters = buildPreDeEsserFilters(params, preFiltersApplied)
-  const preChain = preFilters.join(',') || `aresample=${PREVIEW_SAMPLE_RATE}`
+  // Prepend input normalisation so all measurements and the export chain
+  // operate at the same working level as the preview.
+  const normPreFilters = normVol ? [normVol, ...preFilters] : preFilters
+  const preChain = normPreFilters.join(',') || `aresample=${PREVIEW_SAMPLE_RATE}`
   const postEqLUFS = (await measureFilteredLUFS(inputName, `${preChain},ebur128=peak=true`)) ?? measuredLUFS
 
+  // Pass 1: measure LUFS after compression but WITHOUT the exciter.
+  // The exciter heavily compresses peaks (up to −10 dB at 100 %), which
+  // would make processedLUFS fall sharply, triggering a large positive
+  // makeupDb that then undoes the exciter's character in Pass 2.
+  // Excluding the exciter here means the gain compensation only accounts
+  // for compression; the exciter's sonic character is preserved intact.
   let processedLUFS = postEqLUFS
   if (params.desibilanceEnabled && params.desibilanceAmount > 0) {
-    const postFilters = buildPostDeEsserFilters(params)
     const fc = buildDeEsserFilterComplex(
-      preFilters,
-      postFilters,
+      normPreFilters,   // includes input normalisation
+      [],               // postFilters excluded from measurement
       'ebur128=peak=true',
       params,
       false,
@@ -831,9 +900,9 @@ export async function exportFile(
     processedLUFS = parseLUFS(logs) ?? postEqLUFS
   } else {
     const chain = [
-      ...preFilters,
+      ...normPreFilters,
       ...buildCompressionFilters(params),
-      ...buildPostDeEsserFilters(params),
+      // exciter deliberately excluded — see comment above
       'ebur128=peak=true',
     ].filter(Boolean).join(',')
     processedLUFS = (await measureFilteredLUFS(inputName, chain)) ?? postEqLUFS
@@ -843,7 +912,12 @@ export async function exportFile(
   onProgress?.(30)
 
   const targetLUFS = params.limiterTarget
-  const gainDb = Math.max(-30, Math.min(30, targetLUFS - measuredLUFS))
+
+  // After makeupDb is applied the signal is back at postEqLUFS.
+  // gainDb then lifts it from postEqLUFS to targetLUFS — no makeupDb subtraction.
+  // (Old formula subtracted makeupDb a second time, making the export
+  //  as many dB too quiet as the compression gain-reduction, ~6–10 dB.)
+  const gainDb = Math.max(-30, Math.min(30, targetLUFS - postEqLUFS))
 
   const limitLinear = Math.pow(10, -1 / 20).toFixed(6)
   const normAndLimit = [
@@ -877,15 +951,15 @@ export async function exportFile(
   if (params.desibilanceEnabled && params.desibilanceAmount > 0) {
     // Dynamic de-esser: build a filter_complex that applies the sidechaincompress
     // de-esser before the normalization + limiter.
-    const preFilters  = buildPreDeEsserFilters(params, preFiltersApplied)
+    // normPreFilters already includes the input-level normalisation volume filter.
     const postFilters = buildPostDeEsserFilters(params)
-    const fc = buildDeEsserFilterComplex(preFilters, postFilters, normAndLimit, params, false)
+    const fc = buildDeEsserFilterComplex(normPreFilters, postFilters, normAndLimit, params, false)
     args.push('-filter_complex', fc, '-map', '[out]')
   } else {
-    const pre  = buildPreDeEsserFilters(params, preFiltersApplied)
     const comp = buildCompressionFilters(params)
     const post = buildPostDeEsserFilters(params)
-    const fullChain = [...pre, ...comp, ...post, normAndLimit].filter(Boolean).join(',')
+    // normPreFilters already includes the input-level normalisation volume filter.
+    const fullChain = [...normPreFilters, ...comp, ...post, normAndLimit].filter(Boolean).join(',')
     args.push('-af', fullChain)
   }
 

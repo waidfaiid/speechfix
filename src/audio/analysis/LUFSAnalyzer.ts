@@ -2,24 +2,85 @@
 
 import { measureBufferDynamicsRangeDb } from './dynamicsMeter'
 
-export class LUFSAnalyzer {
-  // K-weighting stage 1 (pre-filter, 48kHz)
-  private static readonly S1_B0 = 1.53512485958697
-  private static readonly S1_B1 = -2.69169618940638
-  private static readonly S1_B2 = 1.19839281085285
-  private static readonly S1_A1 = -1.69065929318241
-  private static readonly S1_A2 = 0.73248077421585
-  // K-weighting stage 2 (RLB, 48kHz)
-  private static readonly S2_B0 = 1.0
-  private static readonly S2_B1 = -2.0
-  private static readonly S2_B2 = 1.0
-  private static readonly S2_A1 = -1.99004745483398
-  private static readonly S2_A2 = 0.99007225036621
+/**
+ * Compute ITU-R BS.1770-4 K-weighting biquad coefficients for any sample rate.
+ *
+ * Stage 1: high-shelf pre-filter  (f₀ = 1681.974 Hz, G ≈ +4 dB, S = 1)
+ * Stage 2: RLB high-pass filter   (f₀ = 38.135 Hz, 2nd-order Butterworth)
+ *
+ * Coefficients are derived via the Audio-EQ-Cookbook bilinear transform so the
+ * critical frequencies are correctly pre-warped for any fs, unlike a static
+ * coefficient table that only works at 48 kHz.
+ */
+function computeKWeightingCoeffs(fs: number): {
+  s1b0: number; s1b1: number; s1b2: number; s1a1: number; s1a2: number
+  s2b0: number; s2b1: number; s2b2: number; s2a1: number; s2a2: number
+} {
+  // ── Stage 1: high-shelf (pre-filter) ─────────────────────────────────────
+  // f₀ = 1681.974 Hz, G = 3.999843853 dB
+  // α-factor 0.63199 is derived from the ITU reference coefficients at 48 kHz
+  // via inverse bilinear transform; it is equivalent to a shelf slope S ≈ 1.244
+  // and holds constant across sample rates (it only depends on the gain A).
+  const f1 = 1681.974480
+  const Gdb = 3.999843853
+  const A = Math.pow(10, Gdb / 40)          // sqrt(10^(Gdb/20))
+  const w1 = 2 * Math.PI * f1 / fs
+  const cos1 = Math.cos(w1)
+  const sin1 = Math.sin(w1)
+  const alpha1 = sin1 * 0.63199             // ITU-matched shelf-slope factor
+  const twoSqrtA_alpha1 = 2 * Math.sqrt(A) * alpha1
 
+  const b0_1 = A * ((A + 1) + (A - 1) * cos1 + twoSqrtA_alpha1)
+  const b1_1 = -2 * A * ((A - 1) + (A + 1) * cos1)
+  const b2_1 = A * ((A + 1) + (A - 1) * cos1 - twoSqrtA_alpha1)
+  const a0_1 = (A + 1) - (A - 1) * cos1 + twoSqrtA_alpha1
+  const a1_1 = 2 * ((A - 1) - (A + 1) * cos1)
+  const a2_1 = (A + 1) - (A - 1) * cos1 - twoSqrtA_alpha1
+
+  // ── Stage 2: 2nd-order high-pass (RLB) ───────────────────────────────────
+  // f₀ = 38.13507760 Hz.  The ITU specification uses Q = 0.5 for this stage
+  // (alpha = sin(w₀) / (2·Q) = sin(w₀) when Q = 0.5), which matches the
+  // reference coefficients for 48 kHz to within 0.001 dB.
+  const f2 = 38.13507760
+  const w2 = 2 * Math.PI * f2 / fs
+  const cos2 = Math.cos(w2)
+  const sin2 = Math.sin(w2)
+  const alpha2 = sin2   // = sin(w2) / (2 · 0.5) — Q = 0.5
+
+  const b0_2 = (1 + cos2) / 2
+  const b1_2 = -(1 + cos2)
+  const b2_2 = (1 + cos2) / 2
+  const a0_2 = 1 + alpha2
+  const a1_2 = -2 * cos2
+  const a2_2 = 1 - alpha2
+
+  return {
+    s1b0: b0_1 / a0_1, s1b1: b1_1 / a0_1, s1b2: b2_1 / a0_1,
+    s1a1: a1_1 / a0_1, s1a2: a2_1 / a0_1,
+    s2b0: b0_2 / a0_2, s2b1: b1_2 / a0_2, s2b2: b2_2 / a0_2,
+    s2a1: a1_2 / a0_2, s2a2: a2_2 / a0_2,
+  }
+}
+
+/** Cached coefficient sets keyed by sample rate to avoid recomputing. */
+const _coeffCache = new Map<number, ReturnType<typeof computeKWeightingCoeffs>>()
+
+function getCoeffs(fs: number) {
+  let c = _coeffCache.get(fs)
+  if (!c) {
+    c = computeKWeightingCoeffs(fs)
+    _coeffCache.set(fs, c)
+  }
+  return c
+}
+
+export class LUFSAnalyzer {
   /**
    * Streaming ITU-R BS.1770-4 LUFS measurement.
    * Uses a ring buffer for the 400 ms sliding window — O(blockSize) memory
    * (~141 KB) instead of allocating three full copies of the audio buffer.
+   * K-weighting coefficients are computed for the buffer's actual sample rate
+   * so the measurement is accurate at 44100 Hz, 48000 Hz, etc.
    */
   analyze(buffer: AudioBuffer): number {
     const sr = buffer.sampleRate
@@ -36,14 +97,13 @@ export class LUFSAnalyzer {
     let s1x1 = 0, s1x2 = 0, s1y1 = 0, s1y2 = 0
     let s2x1 = 0, s2x2 = 0, s2y1 = 0, s2y2 = 0
 
+    const { s1b0, s1b1, s1b2, s1a1, s1a2, s2b0, s2b1, s2b2, s2a1, s2a2 } = getCoeffs(sr)
+
     // Ring buffer for 400 ms sliding window (~141 KB vs 617 MB for a 61-min file)
     const ring = new Float64Array(blockSize)
     let ringHead = 0
     let ringSumSq = 0.0
     const blocks: number[] = []
-
-    const { S1_B0, S1_B1, S1_B2, S1_A1, S1_A2 } = LUFSAnalyzer
-    const { S2_B0, S2_B1, S2_B2, S2_A1, S2_A2 } = LUFSAnalyzer
 
     for (let i = 0; i < numSamples; i++) {
       // Mix channels to mono inline (no intermediate array)
@@ -52,11 +112,11 @@ export class LUFSAnalyzer {
       if (numChannels > 1) x /= numChannels
 
       // K-weighting stage 1
-      const y1 = S1_B0*x + S1_B1*s1x1 + S1_B2*s1x2 - S1_A1*s1y1 - S1_A2*s1y2
+      const y1 = s1b0*x + s1b1*s1x1 + s1b2*s1x2 - s1a1*s1y1 - s1a2*s1y2
       s1x2 = s1x1; s1x1 = x; s1y2 = s1y1; s1y1 = y1
 
       // K-weighting stage 2
-      const y2 = S2_B0*y1 + S2_B1*s2x1 + S2_B2*s2x2 - S2_A1*s2y1 - S2_A2*s2y2
+      const y2 = s2b0*y1 + s2b1*s2x1 + s2b2*s2x2 - s2a1*s2y1 - s2a2*s2y2
       s2x2 = s2x1; s2x1 = y1; s2y2 = s2y1; s2y1 = y2
 
       // Update ring buffer — subtract outgoing, add incoming

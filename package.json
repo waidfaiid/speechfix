@@ -28,6 +28,7 @@
     "lucide-react": "^0.400.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
+    "simple-rnnoise-wasm": "^1.1.0",
     "tailwind-merge": "^2.6.1",
     "vite-plugin-static-copy": "^4.1.0",
     "wavesurfer.js": "^7.12.7",

@@ -1,52 +1,49 @@
 import { audioContextManager } from './AudioContextManager'
 import type { ProcessingParams } from '@/types/processing.types'
-import { createSoftClipCurve, createWarmthCurve, dbToLinear } from '@/utils/audioMath'
+import { createTubeCurve, createTapeCurve, createAutoCurve, dbToLinear } from '@/utils/audioMath'
 import { LUFSAnalyzer } from './analysis/LUFSAnalyzer'
 import { createPinkNoiseBuffer, measureRmsDbfs } from './analysis/pinkNoise'
 import { DYNAMICS_WORKING_LEVEL_LUFS } from './analysis/dynamicsMeter'
-import type { createNoiseSuppressionAudioWorklet as CreateFn } from '@workadventure/noise-suppression/audio-worklet'
-
-/**
- * Duration of the gain ramp (seconds) when the DTLN dry/wet balance changes.
- * Short enough to feel responsive, long enough to avoid a click.
- */
-const DTLN_RAMP_S = 0.020   // 20 ms
+/** Duration of the noise-gain crossfade ramp in seconds. */
+const NOISE_RAMP_S = 0.020   // 20 ms
 
 export interface AudioMetering {
   limiterInterventionDb: number
 }
-
-/** Inferred return type of createNoiseSuppressionAudioWorklet. */
-type DtlnWorkletHandle = Awaited<ReturnType<typeof CreateFn>>
 
 export class AudioEngine {
   private ctx: AudioContext | null = null
   private source: AudioBufferSourceNode | null = null
   private buffer: AudioBuffer | null = null
 
-  // DTLN MediaStream bridge — spans two AudioContexts (48 kHz ↔ 16 kHz).
-  private dtlnContext: AudioContext | null = null
-  /** Sink in the 48 kHz context; receives the post-hum audio. */
-  private dtlnBridgeIn: MediaStreamAudioDestinationNode | null = null
-  /** Source in the 48 kHz context; feeds the EQ chain after DTLN. */
-  private dtlnBridgeOut: MediaStreamAudioSourceNode | null = null
-  /** Source node in the 16 kHz context fed from dtlnBridgeIn. */
-  private dtlnSrc: MediaStreamAudioSourceNode | null = null
-  /** Sink in the 16 kHz context whose stream becomes dtlnBridgeOut. */
-  private dtlnDst: MediaStreamAudioDestinationNode | null = null
-  /** DelayNode on the dry path: compensates for DTLN ring-buffer + bridge latency. */
-  private dtlnDryDelay: DelayNode | null = null
-  /** Gain for the dry (bypass) path inside the 16 kHz context. */
-  private dtlnDryGain: GainNode | null = null
-  /** Gain for the DTLN-processed wet path inside the 16 kHz context. */
-  private dtlnWetGain: GainNode | null = null
-  /** Mirror of ProcessingParams.dtlnLatencyMs, kept in sync by updateParams(). */
-  private dtlnLatencyMs = 48
-  /** The AudioWorkletNode created by @workadventure/noise-suppression. */
-  private dtlnWorkletHandle: DtlnWorkletHandle | null = null
-  /** True once the DTLN worklet has initialised and is connected. */
-  private dtlnReady = false
-  /** Last noise params applied so we can re-apply after DTLN finishes loading. */
+  // ── RNNoise noise-reduction section ────────────────────────────────────────
+  /** AudioWorkletNode wrapping the RNNoise WASM processor (48 kHz, mono). */
+  private rnnoiseNode: AudioWorkletNode | null = null
+  /** True once the RNNoise worklet and WASM have loaded. */
+  private rnnoiseReady = false
+  /**
+   * Delay on the dry bypass path that compensates for RNNoise's internal
+   * latency (480 samples / 48 kHz = 10 ms).  Without this the dry and wet
+   * signals are ~10 ms apart at partial mix values, which sounds like an echo.
+   * 10 ms is imperceptible for listening (well below the 40 ms AV-sync threshold).
+   */
+  private noiseBypassDelay: DelayNode | null = null
+  /**
+   * Dry path: carries the original EQ output directly to the compressor.
+   * gain = 1 − noiseAmount (full signal when noise is off, fades out when on).
+   */
+  private noiseBypassGain: GainNode | null = null
+  /**
+   * Input gate: routes signal into the RNNoise node.
+   * gain = 1 when noise is active, 0 otherwise (avoids unnecessary processing).
+   */
+  private noiseInputGain: GainNode | null = null
+  /**
+   * Wet output gain: blends the RNNoise output into the compressor.
+   * gain = noiseAmount.
+   */
+  private noiseWetGain: GainNode | null = null
+  /** Noise params received before RNNoise finished loading. */
   private _pendingNoiseParams: { enabled: boolean; amount: number } | null = null
 
   /** Input anchor of the hum-filter sub-chain. Feeds into the active filter array. */
@@ -58,6 +55,9 @@ export class AudioEngine {
   private compressorStage1: DynamicsCompressorNode | null = null
   private compressorStage2: DynamicsCompressorNode | null = null
   private exciterWaveshaper: WaveShaperNode | null = null
+  /** DC-blocking highpass at 10 Hz — removes the tiny DC offset produced by
+   *  asymmetric tube biasing. Inaudible on tape/auto-tape paths. */
+  private exciterDcBlock: BiquadFilterNode | null = null
   private makeupGain: GainNode | null = null
   private previewNormalizeGain: GainNode | null = null
   private limiterWorklet: AudioWorkletNode | null = null
@@ -117,9 +117,9 @@ export class AudioEngine {
     this.ctx = await audioContextManager.initOnUserGesture()
     this.buildGraph()
     this.startKeepAlive()
-    // Initialise DTLN asynchronously — audio plays with dry bypass until ready.
-    this.initDtln().catch((err) => {
-      console.warn('[DTLN] worklet initialisation failed; noise slider will have no effect in preview:', err)
+    // Load RNNoise WASM asynchronously — audio plays with dry bypass until ready.
+    this.initRnnoise().catch((err) => {
+      console.warn('[RNNoise] init failed; noise slider will have no effect in preview:', err)
     })
   }
 
@@ -148,43 +148,6 @@ export class AudioEngine {
       return n
     })
     this._reconnectHumChain()
-
-    // ---- DTLN MediaStream bridge ----
-    // The DTLN neural denoiser operates at 16 kHz.  We bridge the 48 kHz
-    // processed chain into a secondary 16 kHz AudioContext and back using
-    // MediaStreamTrack routing.  The browser resamples automatically at each
-    // hop.  While DTLN is loading the dry gain is 1 (full bypass) so audio
-    // plays uninterrupted.
-    this.dtlnBridgeIn = ctx.createMediaStreamDestination()
-
-    this.dtlnContext = audioContextManager.createDtlnContext()
-    if (this.dtlnContext.state === 'suspended') {
-      this.dtlnContext.resume().catch(() => { /* best-effort */ })
-    }
-
-    this.dtlnSrc = this.dtlnContext.createMediaStreamSource(this.dtlnBridgeIn.stream)
-    this.dtlnDst = this.dtlnContext.createMediaStreamDestination()
-
-    this.dtlnDryGain = this.dtlnContext.createGain()
-    this.dtlnDryGain.gain.value = 1   // full dry until DTLN ready
-    this.dtlnWetGain = this.dtlnContext.createGain()
-    this.dtlnWetGain.gain.value = 0   // silent until DTLN ready
-
-    // Delay the dry path by dtlnLatencyMs to time-align it with the wet signal.
-    // The DTLN AudioWorklet introduces latency from:
-    //   • 4×128-sample ring buffer at 16 kHz  → 32 ms
-    //   • Two MediaStream bridge hops          → ~10 ms
-    // Total ≈ 48 ms.  The user can fine-tune via the ± control in the UI.
-    this.dtlnDryDelay = this.dtlnContext.createDelay(0.5)
-    this.dtlnDryDelay.delayTime.value = this.dtlnLatencyMs / 1000
-
-    // Dry path: dtlnSrc → dtlnDryDelay → dtlnDryGain → dtlnDst
-    this.dtlnSrc.connect(this.dtlnDryDelay)
-    this.dtlnDryDelay.connect(this.dtlnDryGain)
-    this.dtlnDryGain.connect(this.dtlnDst)
-    // Wet path: dtlnSrc → worklet → dtlnWetGain → dtlnDst  (connected in initDtln())
-
-    this.dtlnBridgeOut = ctx.createMediaStreamSource(this.dtlnDst.stream)
 
     this.eqNodes = Array.from({ length: 7 }, () => {
       const n = ctx.createBiquadFilter()
@@ -228,6 +191,11 @@ export class AudioEngine {
     this.exciterWaveshaper = ctx.createWaveShaper()
     this.exciterWaveshaper.curve = null
     this.exciterWaveshaper.oversample = '4x'
+
+    this.exciterDcBlock = ctx.createBiquadFilter()
+    this.exciterDcBlock.type = 'highpass'
+    this.exciterDcBlock.frequency.value = 10
+    this.exciterDcBlock.Q.value = 0.707
 
     this.makeupGain = ctx.createGain()
     this.makeupGain.gain.value = 1
@@ -275,22 +243,55 @@ export class AudioEngine {
 
     const deEsser = this.desibilanceWorklet ?? this.desibilanceFallback
 
-    // Pre-bridge chain: inputNormalizeGain → humChainIn → [humFilters] → humChainOut → eqNodes → dtlnBridgeIn
-    // EQ runs before DTLN so the denoiser receives a spectrally balanced signal —
-    // the model was trained on typical speech and produces artefacts when fed
-    // audio with an abnormal frequency response (e.g. extreme low-mid buildup).
+    // ── Noise-reduction routing ──────────────────────────────────────────────
+    // RNNoise introduces ~10 ms of latency (480 samples at 48 kHz) before its
+    // first output frame appears.  We delay the dry bypass path by the same
+    // amount so both paths arrive at the compressor in phase; without this
+    // a partial mix sounds like an echo.
+    const RNNOISE_DELAY_S = 28.65 / 1000   // 28.65 ms (empirisch kalibriert)
+    this.noiseBypassDelay = ctx.createDelay(0.1)
+    this.noiseBypassDelay.delayTime.value = RNNOISE_DELAY_S
+
+    // Path A (dry): EQ output → noiseBypassDelay → noiseBypassGain → compressor
+    //   gain = 1 − noiseAmount; carries the full-quality original signal.
+    this.noiseBypassGain = ctx.createGain()
+    this.noiseBypassGain.gain.value = 1   // fully dry at startup (no noise reduction)
+
+    // Always-open pass-through: RNNoise receives audio at all times so the
+    // RNN hidden state never trains on silence.
+    this.noiseInputGain = ctx.createGain()
+    this.noiseInputGain.gain.value = 1
+
+    // Path B (wet): EQ output → noiseInputGain → rnnoiseNode → noiseWetGain → compressor
+    //   gain = noiseAmount; carries the denoised signal once RNNoise has loaded.
+    this.noiseWetGain = ctx.createGain()
+    this.noiseWetGain.gain.value = 0
+
+    // Pre-noise chain: inputNormalizeGain → humChain → eqNodes
     this.inputNormalizeGain.connect(this.humChainIn)
     // humChainIn → filters → humChainOut already wired by _reconnectHumChain()
     this.connectChain([this.humChainOut, ...this.eqNodes])
-    this.eqNodes[this.eqNodes.length - 1].connect(this.dtlnBridgeIn)
 
-    // Post-bridge chain: dtlnBridgeOut → compressors → de-esser → … → masterOut
+    const lastEq = this.eqNodes[this.eqNodes.length - 1]
+
+    // Dry path: lastEq → noiseBypassDelay → noiseBypassGain → compressorStage1
+    lastEq.connect(this.noiseBypassDelay)
+    this.noiseBypassDelay.connect(this.noiseBypassGain)
+    this.noiseBypassGain.connect(this.compressorStage1!)
+
+    // Wet path feed: lastEq → noiseInputGain (gain=1, fixed) → rnnoiseNode (connected in initRnnoise)
+    lastEq.connect(this.noiseInputGain)
+
+    // Wet path output: noiseWetGain → compressorStage1 (rnnoiseNode → noiseWetGain in initRnnoise)
+    this.noiseWetGain.connect(this.compressorStage1!)
+
+    // Shared post-noise chain: compressor → de-esser → exciter → limiter → out
     this.connectChain([
-      this.dtlnBridgeOut,
       this.compressorStage1,
       this.compressorStage2,
       deEsser,
       this.exciterWaveshaper,
+      this.exciterDcBlock,
       this.makeupGain,
       this.previewNormalizeGain,
       this.limiterWorklet ?? this.limiterCompressor,
@@ -308,60 +309,73 @@ export class AudioEngine {
   }
 
   /**
-   * Asynchronously loads the DTLN AudioWorklet into the 16 kHz context and
-   * connects the wet signal path.  Audio plays with full dry bypass until this
-   * resolves.  After completion any pending noise params are applied.
+   * Asynchronously loads the RNNoise WASM and connects the wet signal path.
+   * Audio plays with full dry bypass until this resolves.
+   * After completion any pending noise params are applied.
    */
-  private async initDtln(): Promise<void> {
-    if (!this.dtlnContext || !this.dtlnSrc || !this.dtlnDst || !this.dtlnWetGain) return
+  /**
+   * Load the RNNoise WASM module and connect the wet path in the graph.
+   * Runs asynchronously after buildGraph() so audio is immediately available
+   * on the fully-dry bypass path while the WASM loads.
+   */
+  private async initRnnoise(): Promise<void> {
+    if (!this.ctx || !this.noiseInputGain || !this.noiseWetGain) return
 
-    // Lazy dynamic import keeps the main bundle free of the heavy DTLN package.
-    const { createNoiseSuppressionAudioWorklet } = await import(
-      '@workadventure/noise-suppression/audio-worklet'
-    ) as { createNoiseSuppressionAudioWorklet: typeof CreateFn }
+    const response = await fetch('/rnnoise.wasm')
+    if (!response.ok) throw new Error(`Failed to fetch rnnoise.wasm: ${response.status}`)
+    const module = await WebAssembly.compile(await response.arrayBuffer())
 
-    const handle = await createNoiseSuppressionAudioWorklet(this.dtlnContext, {
-      moduleUrl: '/noise-suppression/audio-worklet-processor.js',
-      bypassUntilReady: true,
+    this.rnnoiseNode = new AudioWorkletNode(this.ctx, 'rnnoise', {
+      channelCountMode: 'explicit',
+      channelCount: 1,
+      channelInterpretation: 'speakers',
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: { module },
     })
 
-    // Wait for LiteRT and the DTLN models to finish loading inside the worklet.
-    await handle.ready
+    // Complete the wet path: noiseInputGain → rnnoiseNode → noiseWetGain
+    this.noiseInputGain.connect(this.rnnoiseNode)
+    this.rnnoiseNode.connect(this.noiseWetGain)
 
-    // Wire the wet path: dtlnSrc → worklet.node → dtlnWetGain → dtlnDst
-    this.dtlnSrc.connect(handle.node)
-    handle.node.connect(this.dtlnWetGain)
-    this.dtlnWetGain.connect(this.dtlnDst)
+    this.rnnoiseReady = true
 
-    this.dtlnWorkletHandle = handle
-    this.dtlnReady = true
-
-    // Apply any slider changes that arrived while we were loading.
+    // Apply any slider changes that arrived while the WASM was loading.
     if (this._pendingNoiseParams) {
-      this._applyDtlnGains(this._pendingNoiseParams.enabled, this._pendingNoiseParams.amount)
+      this._applyNoiseGains(this._pendingNoiseParams.enabled, this._pendingNoiseParams.amount)
       this._pendingNoiseParams = null
     }
   }
 
-  private _applyDtlnGains(enabled: boolean, amount: number): void {
-    if (!this.dtlnContext || !this.dtlnDryGain || !this.dtlnWetGain) return
-    const now = this.dtlnContext.currentTime
-    const end = now + DTLN_RAMP_S
+  /**
+   * Smoothly crossfade between the dry bypass path and the RNNoise wet path.
+   *
+   * Dry path (noiseBypassGain):  gain = 1 − amount  (original signal)
+   * Wet path (noiseWetGain):     gain = amount       (RNNoise output)
+   * Input gate (noiseInputGain): 1 when active, 0 otherwise
+   */
+  private _applyNoiseGains(enabled: boolean, amount: number): void {
+    if (!this.ctx || !this.noiseBypassGain || !this.noiseWetGain) return
 
-    // True dry/wet mix: the DelayNode on the dry path compensates for the
-    // DTLN worklet's latency so both signals arrive at dtlnDst in phase.
-    // amount = 0 → full bypass (dry=1, wet=0)
-    // amount = 1 → full denoising (dry=0, wet=1)
-    const targetDry = (enabled && amount > 0) ? 1 - amount : 1
-    const targetWet = (enabled && amount > 0) ? amount      : 0
+    const isActive = enabled && amount > 0 && this.rnnoiseReady
 
-    this.dtlnDryGain.gain.cancelScheduledValues(now)
-    this.dtlnDryGain.gain.setValueAtTime(this.dtlnDryGain.gain.value, now)
-    this.dtlnDryGain.gain.linearRampToValueAtTime(targetDry, end)
+    const now = this.ctx.currentTime
+    const end = now + NOISE_RAMP_S
 
-    this.dtlnWetGain.gain.cancelScheduledValues(now)
-    this.dtlnWetGain.gain.setValueAtTime(this.dtlnWetGain.gain.value, now)
-    this.dtlnWetGain.gain.linearRampToValueAtTime(targetWet, end)
+    const bypassTarget = isActive ? 1 - amount : 1
+    const wetTarget    = isActive ? amount      : 0
+
+    const ramp = (node: GainNode, target: number) => {
+      node.gain.cancelScheduledValues(now)
+      node.gain.setValueAtTime(node.gain.value, now)
+      node.gain.linearRampToValueAtTime(target, end)
+    }
+
+    ramp(this.noiseBypassGain, bypassTarget)
+    ramp(this.noiseWetGain,    wetTarget)
+    // noiseInputGain stays permanently at 1 — RNNoise always receives audio so
+    // the RNN model never "trains on silence" and its hidden state stays valid.
   }
 
   private connectChain(nodes: (AudioNode | null)[]): void {
@@ -489,8 +503,6 @@ export class AudioEngine {
       this.source.connect(this.bypassNormalizeGain)
     }
 
-    // Resume the 16 kHz DTLN context if it was suspended (e.g. after tab background).
-    this.dtlnContext?.resume().catch(() => { /* best-effort */ })
 
     this.startPinkNoise()
 
@@ -608,21 +620,20 @@ export class AudioEngine {
       })
     }
 
-    // DTLN dry/wet control.
-    // If the worklet is not yet ready we store the params and apply them once it is.
-    if (this.dtlnReady) {
-      this._applyDtlnGains(params.noiseEnabled, params.noiseAmount)
+    // RNNoise dry/wet control.
+    // If the WASM is not yet ready, store and apply once initRnnoise() completes.
+    if (this.rnnoiseReady) {
+      this._applyNoiseGains(params.noiseEnabled, params.noiseAmount)
     } else {
       this._pendingNoiseParams = { enabled: params.noiseEnabled, amount: params.noiseAmount }
     }
 
-    // Keep the dry-path delay node in sync with the user-adjusted latency value.
-    if (this.dtlnDryDelay && this.dtlnContext && params.dtlnLatencyMs !== this.dtlnLatencyMs) {
-      this.dtlnLatencyMs = params.dtlnLatencyMs
-      this.dtlnDryDelay.delayTime.setTargetAtTime(
-        params.dtlnLatencyMs / 1000,
-        this.dtlnContext.currentTime,
-        0.010,   // 10 ms time-constant — smooth but fast
+    // Keep the dry-path delay in sync with the user-adjusted latency value.
+    if (this.noiseBypassDelay && this.ctx) {
+      this.noiseBypassDelay.delayTime.setTargetAtTime(
+        params.noiseLatencyMs / 1000,
+        this.ctx.currentTime,
+        0.010,
       )
     }
 
@@ -676,9 +687,14 @@ export class AudioEngine {
 
     if (this.exciterWaveshaper) {
       if (params.exciterEnabled && params.exciterAmount > 0) {
-        const curve = params.exciterMode === 'warmth'
-          ? createWarmthCurve(params.exciterAmount * 0.5)
-          : createSoftClipCurve(params.exciterAmount * 0.4)
+        let curve: Float32Array
+        if (params.exciterMode === 'tube') {
+          curve = createTubeCurve(params.exciterAmount)
+        } else if (params.exciterMode === 'tape') {
+          curve = createTapeCurve(params.exciterAmount)
+        } else {
+          curve = createAutoCurve(params.exciterAmount)
+        }
         this.exciterWaveshaper.curve = curve as unknown as Float32Array<ArrayBuffer>
       } else {
         this.exciterWaveshaper.curve = null
@@ -712,9 +728,13 @@ export class AudioEngine {
   }
 
   /**
-   * Adjusts previewNormalizeGain so that the net gain through the full processed
-   * chain (inputNormalize + makeupGain + previewNormalize) equals
-   * (targetLUFS − sourceLUFS), matching the export's single-gain approach.
+   * Adjusts previewNormalizeGain so that makeupGain + previewNormalizeGain
+   * together equal (targetLUFS − WORKING_LEVEL), i.e. a fixed 7 dB when the
+   * target is −16 LUFS.  The DynamicsCompressorNode already applies automatic
+   * makeup gain; the explicit makeupGain node keeps the signal at the correct
+   * drive level for the limiter, while this node provides the remaining gain to
+   * reach targetLUFS.  Subtracting _currentMakeupDb here neutralises the
+   * makeupGain boost so that the combined effect is always constant.
    */
   private _applyPreviewNormalize(now: number): void {
     if (!this.previewNormalizeGain) return
@@ -797,8 +817,6 @@ export class AudioEngine {
   destroy(): void {
     this.stop()
     this.keepAliveOsc?.stop()
-    this.dtlnWorkletHandle?.dispose()
-    this.dtlnContext?.close()
     this.ctx?.close()
   }
 }

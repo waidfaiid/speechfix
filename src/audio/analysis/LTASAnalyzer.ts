@@ -13,6 +13,15 @@ const FFT_SIZE = 4096
 const HOP = FFT_SIZE / 2
 const SILENCE_THRESHOLD = 0.0005  // ~-66 dBFS RMS
 
+/**
+ * Maximum number of FFT frames to process regardless of file length.
+ * Frames are sampled uniformly across the full duration so the LTAS
+ * represents the whole recording. 4 000 frames is statistically more
+ * than sufficient for a stable long-term average spectrum and keeps
+ * analysis time under ~10 s even for very long recordings.
+ */
+const MAX_LTAS_FRAMES = 4000
+
 const GRID_POINTS = 512
 const MIN_FREQ = 20
 const MAX_FREQ = 20000
@@ -139,11 +148,18 @@ export async function analyzeLTAS(
   const re = new Float64Array(FFT_SIZE)
   const im = new Float64Array(FFT_SIZE)
 
-  const numFrames = Math.max(1, Math.floor((length - FFT_SIZE) / HOP))
+  // Total possible frames at the native hop size
+  const rawNumFrames = Math.max(1, Math.floor((length - FFT_SIZE) / HOP))
+
+  // For long recordings stride through the file uniformly so that at most
+  // MAX_LTAS_FRAMES FFTs are computed. This keeps analysis time under ~10 s
+  // while still capturing the full spectral character of the recording.
+  const stride = Math.max(1, Math.ceil(rawNumFrames / MAX_LTAS_FRAMES))
+  const numFrames = Math.ceil(rawNumFrames / stride)
   let validFrames = 0
 
-  for (let frame = 0; frame < numFrames; frame++) {
-    const start = frame * HOP
+  for (let frameIdx = 0; frameIdx < numFrames; frameIdx++) {
+    const start = frameIdx * stride * HOP
 
     // Fill + window
     let rmsSum = 0
@@ -173,8 +189,8 @@ export async function analyzeLTAS(
     validFrames++
 
     // Yield every 200 frames to keep the UI responsive
-    if (frame % 200 === 199) {
-      onProgress?.(frame / numFrames)
+    if (frameIdx % 200 === 199) {
+      onProgress?.(frameIdx / numFrames)
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
     }
   }

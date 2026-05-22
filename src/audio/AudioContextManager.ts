@@ -32,21 +32,12 @@ class AudioContextManager {
     return this.ctx
   }
 
-  /**
-   * Create a secondary 16 kHz AudioContext for DTLN inference.
-   * Must be called within (or after) a user-gesture handler so the browser
-   * permits context creation without autoplay policy restrictions.
-   */
-  createDtlnContext(): AudioContext {
-    const AudioCtx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
-    return new AudioCtx({ sampleRate: 16000, latencyHint: 'interactive' })
-  }
-
   private async registerWorklets(): Promise<void> {
     if (!this.ctx) return
     const modules = [
       '/worklets/de-esser-processor.js',
       '/worklets/preview-limiter-processor.js',
+      '/rnnoise.worklet.js',
     ]
     for (const path of modules) {
       try {
