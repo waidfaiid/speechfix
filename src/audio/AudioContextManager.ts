@@ -1,5 +1,20 @@
 type StateListener = (state: AudioContextState) => void
 
+/**
+ * Returns a Promise that rejects after `ms` milliseconds.
+ * Used to guard against iOS Safari operations that can hang indefinitely
+ * (e.g. AudioContext.resume() or audioWorklet.addModule() outside a user gesture).
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`[iOS timeout] ${label} timed out after ${ms} ms`)), ms)
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v) },
+      (e) => { clearTimeout(timer); reject(e) },
+    )
+  })
+}
+
 class AudioContextManager {
   private ctx: AudioContext | null = null
   private listeners: Set<StateListener> = new Set()
@@ -14,14 +29,24 @@ class AudioContextManager {
 
   async initOnUserGesture(): Promise<AudioContext> {
     if (this.ctx && this.ctx.state !== 'closed') {
-      if (this.ctx.state === 'suspended') await this.ctx.resume()
+      if (this.ctx.state === 'suspended') {
+        // iOS Safari can hang on resume() when called outside a synchronous user-gesture
+        // handler. Wrap with a generous timeout so loading never freezes.
+        await withTimeout(this.ctx.resume(), 3000, 'AudioContext.resume').catch((err) => {
+          console.warn('[AudioContextManager] resume() timed out or failed:', err)
+        })
+      }
       return this.ctx
     }
 
     const AudioCtx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
     this.ctx = new AudioCtx({ sampleRate: 48000, latencyHint: 'interactive' })
 
-    if (this.ctx.state === 'suspended') await this.ctx.resume()
+    if (this.ctx.state === 'suspended') {
+      await withTimeout(this.ctx.resume(), 3000, 'AudioContext.resume (initial)').catch((err) => {
+        console.warn('[AudioContextManager] initial resume() timed out or failed:', err)
+      })
+    }
 
     this.ctx.addEventListener('statechange', () => {
       this.listeners.forEach((l) => l(this.ctx!.state))
@@ -41,7 +66,8 @@ class AudioContextManager {
     ]
     for (const path of modules) {
       try {
-        await this.ctx.audioWorklet.addModule(path)
+        // iOS Safari can hang on addModule() — guard with a 6-second timeout per module.
+        await withTimeout(this.ctx.audioWorklet.addModule(path), 6000, `addModule(${path})`)
       } catch (err) {
         // Worklet registration failures are non-fatal; the engine falls back to
         // simpler Web Audio nodes when a preview processor is unavailable.

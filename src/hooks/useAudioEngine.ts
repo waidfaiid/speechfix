@@ -3,6 +3,7 @@ import { audioEngine } from '@/audio/AudioEngine'
 import { useAudioStore } from '@/store/useAudioStore'
 import { useFileStore } from '@/store/useFileStore'
 import { useProcessingStore } from '@/store/useProcessingStore'
+import { useUIStore } from '@/store/useUIStore'
 import { analyzeDynamics } from '@/audio/analysis/LUFSAnalyzer'
 import {
   measureBufferDynamicsRangeDb,
@@ -33,9 +34,12 @@ function getQualityCeiling(fileName: string, fileSize: number, duration: number)
 let cachedBuffer: AudioBuffer | null = null
 /** Pre-chain input gain (dB) matching AudioEngine.inputNormalizeGain. */
 let cachedInputGainDb = 0
+/** Cancels stale preview-gain runs when params change quickly. */
+let previewGainGeneration = 0
 
 async function refreshPreviewGainStaging(): Promise<void> {
   if (!cachedBuffer) return
+  const gen = ++previewGainGeneration
   const state = useProcessingStore.getState()
   const params = state.getParams()
   const { makeupDb, gainDb, postCompTrimDb } = await computeExportGainStaging(
@@ -44,6 +48,7 @@ async function refreshPreviewGainStaging(): Promise<void> {
     params,
     state.limiterTarget,
   )
+  if (gen !== previewGainGeneration) return
   audioEngine.setExportGainStaging(makeupDb, gainDb, postCompTrimDb)
 }
 
@@ -100,10 +105,10 @@ export function useAudioEngine() {
     const schedule = () => {
       if (previewGainDebounceRef.current) clearTimeout(previewGainDebounceRef.current)
       previewGainDebounceRef.current = setTimeout(() => {
-        refreshPreviewGainStaging().catch((err) => {
-          console.warn('[PreviewGain] export gain staging failed:', err)
+        refreshPreviewGainStaging().catch(() => {
+          // Stale run or memory pressure — keep last valid staging.
         })
-      }, 300)
+      }, 600)
     }
 
     const unsubscribe = useProcessingStore.subscribe((state, prev) => {
@@ -186,7 +191,17 @@ export function useAudioEngine() {
         buffer = await audioEngine.loadFile(activeFile.file)
       } catch (err) {
         console.error('Failed to load audio:', err)
-        if (!cancelled) setIsLoading(false)
+        if (!cancelled) {
+          setIsLoading(false)
+          const msg = err instanceof Error ? err.message : String(err)
+          const isTimeout = msg.includes('timed out')
+          useUIStore.getState().addToast(
+            isTimeout
+              ? 'Track konnte nicht geladen werden. Die Datei ist möglicherweise zu groß oder das Format wird nicht unterstützt.'
+              : `Fehler beim Laden: ${msg}`,
+            'error',
+          )
+        }
         return
       }
       if (cancelled) return

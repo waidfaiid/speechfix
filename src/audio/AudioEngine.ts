@@ -4,8 +4,46 @@ import { createTubeCurve, createTapeCurve, createAutoCurve, dbToLinear } from '@
 import { LUFSAnalyzer } from './analysis/LUFSAnalyzer'
 import { createPinkNoiseBuffer, measureRmsDbfs } from './analysis/pinkNoise'
 import { DYNAMICS_WORKING_LEVEL_LUFS } from './analysis/dynamicsMeter'
+
 /** Duration of the noise-gain crossfade ramp in seconds. */
 const NOISE_RAMP_S = 0.020   // 20 ms
+
+/**
+ * iOS Safari can leave the `decodeAudioData` Promise in a perpetually-pending
+ * state (neither resolved nor rejected) for unsupported or very large files.
+ * This wrapper:
+ *   1. Prefers the callback-based API on iOS/Safari to get explicit error events.
+ *   2. Races against a generous 60-second timeout so the UI loading state never
+ *      freezes indefinitely.
+ */
+function decodeAudioDataSafe(ctx: AudioContext, arrayBuffer: ArrayBuffer): Promise<AudioBuffer> {
+  const TIMEOUT_MS = 60_000
+
+  return new Promise<AudioBuffer>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(
+        'decodeAudioData timed out after 60 s. ' +
+        'The file may be too large for this device or in an unsupported format.',
+      ))
+    }, TIMEOUT_MS)
+
+    const done = (buf: AudioBuffer) => { clearTimeout(timer); resolve(buf) }
+    const fail = (err: unknown) => {
+      clearTimeout(timer)
+      reject(err instanceof Error ? err : new Error(String(err)))
+    }
+
+    try {
+      // Callback form: supported on all Safari versions (incl. pre-iOS-14).
+      // Passing both success and error callbacks avoids the silent-hang bug on
+      // older WebKit where the Promise branch never rejects on decode errors.
+      ctx.decodeAudioData(arrayBuffer, done, fail)
+    } catch (e) {
+      // Synchronous throw means the API is unavailable or the buffer is empty.
+      fail(e)
+    }
+  })
+}
 
 export interface AudioMetering {
   limiterInterventionDb: number
@@ -482,10 +520,25 @@ export class AudioEngine {
   }
 
   async loadFile(file: File): Promise<AudioBuffer> {
-    if (!this.ctx) await this.init()
+    if (!this.ctx) {
+      // iOS: wrap init() so a hanging worklet addModule() never freezes the load.
+      // The individual addModule() calls already have per-module timeouts in
+      // AudioContextManager; this outer guard catches any remaining edge-case.
+      await Promise.race([
+        this.init(),
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('[iOS] AudioEngine.init() timed out after 20 s')), 20_000),
+        ),
+      ]).catch((err) => {
+        console.warn('[AudioEngine] init() timed out or failed; retrying without worklets:', err)
+        // If init() timed out the ctx may still have been created; continue if so.
+      })
+      // Ensure ctx is set even if init() partially succeeded.
+      if (!this.ctx) await this.init()
+    }
     const ctx = this.ctx!
     const arrayBuffer = await file.arrayBuffer()
-    const decoded = await ctx.decodeAudioData(arrayBuffer)
+    const decoded = await decodeAudioDataSafe(ctx, arrayBuffer)
     this.buffer = decoded
     this.sourceLUFS = this.lufsAnalyzer.analyze(decoded)
     this._previewNormalizeDb = 0

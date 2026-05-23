@@ -13,6 +13,8 @@ const LIMITER_RELEASE_SEC = 0.05
  * Preview peak limiter does not replicate this — measured gap ≈ 1.3 dB on speech.
  */
 const FFMPEG_ALIMITER_ASC_LUFS_DROP = 1.3
+/** LUFS analysis window — full-track render is unnecessary and OOMs on long sermons. */
+const ANALYSIS_SEGMENT_SEC = 45
 
 export interface ExportGainStaging {
   /** Restores compressed level to postEq (applied after exciter in export). */
@@ -32,6 +34,27 @@ async function resampleToPreviewRate(buffer: AudioBuffer): Promise<AudioBuffer> 
   source.connect(ctx.destination)
   source.start(0)
   return ctx.startRendering()
+}
+
+/** Representative slice for offline metering — avoids multi-minute OfflineAudioContext renders. */
+function sliceForAnalysis(buffer: AudioBuffer): AudioBuffer {
+  const maxSamples = Math.min(
+    buffer.length,
+    Math.floor(buffer.sampleRate * ANALYSIS_SEGMENT_SEC),
+  )
+  if (maxSamples === buffer.length) return buffer
+
+  const start = Math.min(
+    Math.floor(buffer.length * 0.25),
+    Math.max(0, buffer.length - maxSamples),
+  )
+  const { numberOfChannels, sampleRate } = buffer
+  const ctx = new OfflineAudioContext(numberOfChannels, maxSamples, sampleRate)
+  const out = ctx.createBuffer(numberOfChannels, maxSamples, sampleRate)
+  for (let ch = 0; ch < numberOfChannels; ch++) {
+    out.copyToChannel(buffer.getChannelData(ch).subarray(start, start + maxSamples), ch)
+  }
+  return out
 }
 
 function connectChain(nodes: AudioNode[]): void {
@@ -115,12 +138,11 @@ async function renderPostEqBuffer(
   inputGainDb: number,
   params: ProcessingParams,
 ): Promise<AudioBuffer> {
-  const resampled = await resampleToPreviewRate(buffer)
-  const { numberOfChannels, length } = resampled
-  const ctx = new OfflineAudioContext(numberOfChannels, length, PREVIEW_SAMPLE_RATE)
+  const { numberOfChannels, length, sampleRate } = buffer
+  const ctx = new OfflineAudioContext(numberOfChannels, length, sampleRate)
 
   const source = ctx.createBufferSource()
-  source.buffer = resampled
+  source.buffer = buffer
 
   const inputGain = ctx.createGain()
   inputGain.gain.value = Math.pow(10, inputGainDb / 20)
@@ -138,8 +160,8 @@ async function measureChromeCompLUFS(
   postEqBuffer: AudioBuffer,
   params: ProcessingParams,
 ): Promise<number> {
-  const { numberOfChannels, length } = postEqBuffer
-  const ctx = new OfflineAudioContext(numberOfChannels, length, postEqBuffer.sampleRate)
+  const { numberOfChannels, length, sampleRate } = postEqBuffer
+  const ctx = new OfflineAudioContext(numberOfChannels, length, sampleRate)
 
   const source = ctx.createBufferSource()
   source.buffer = postEqBuffer
@@ -170,15 +192,14 @@ function buildExciterNode(ctx: BaseAudioContext, params: ProcessingParams): Wave
   return exciter
 }
 
-/** Offline render through comp → trim → exciter → makeup (matches live pre-limiter). */
 async function renderPreLimiterBuffer(
   postEqBuffer: AudioBuffer,
   params: ProcessingParams,
   postCompTrimDb: number,
   makeupDb: number,
 ): Promise<AudioBuffer> {
-  const { numberOfChannels, length } = postEqBuffer
-  const ctx = new OfflineAudioContext(numberOfChannels, length, postEqBuffer.sampleRate)
+  const { numberOfChannels, length, sampleRate } = postEqBuffer
+  const ctx = new OfflineAudioContext(numberOfChannels, length, sampleRate)
 
   const source = ctx.createBufferSource()
   source.buffer = postEqBuffer
@@ -191,8 +212,6 @@ async function renderPreLimiterBuffer(
     trim.gain.value = Math.pow(10, postCompTrimDb / 20)
     chain.push(trim)
   }
-
-  // De-esser omitted — dynamic worklet only cuts sibilance; static peaking skews gain low.
 
   chain.push(buildExciterNode(ctx, params))
 
@@ -216,81 +235,73 @@ async function renderPreLimiterBuffer(
   return ctx.startRendering()
 }
 
-/** Apply linear gain to an AudioBuffer (returns a new buffer). */
-function applyGainDb(buffer: AudioBuffer, gainDb: number): AudioBuffer {
-  const linear = Math.pow(10, gainDb / 20)
-  const ctx = new OfflineAudioContext(
-    buffer.numberOfChannels,
-    buffer.length,
-    buffer.sampleRate,
-  )
-  const out = ctx.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate)
-  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-    const input = buffer.getChannelData(ch)
-    const channel = new Float32Array(input.length)
-    for (let i = 0; i < input.length; i++) channel[i] = input[i] * linear
-    out.copyToChannel(channel, ch)
+function bufferFromChannels(
+  channels: Float32Array[],
+  sampleRate: number,
+): AudioBuffer {
+  const ctx = new OfflineAudioContext(channels.length, channels[0].length, sampleRate)
+  const out = ctx.createBuffer(channels.length, channels[0].length, sampleRate)
+  for (let ch = 0; ch < channels.length; ch++) {
+    out.copyToChannel(new Float32Array(channels[ch]), ch)
   }
   return out
 }
 
-/**
- * Peak limiter matching preview-limiter-processor.js (5 ms lookahead, −1 dBTP ceiling).
- * Shared gain reduction across all channels.
- */
-function applyPreviewStyleLimiter(buffer: AudioBuffer): AudioBuffer {
-  const { numberOfChannels, length, sampleRate } = buffer
+function applyGainInPlace(channels: Float32Array[], gainDb: number): void {
+  const linear = Math.pow(10, gainDb / 20)
+  for (const ch of channels) {
+    for (let i = 0; i < ch.length; i++) ch[i] *= linear
+  }
+}
+
+/** Peak limiter on channel arrays (no extra AudioBuffer allocations). */
+function limitChannelsInPlace(channels: Float32Array[], sampleRate: number): void {
+  const numCh = channels.length
+  const channelLen = channels[0].length
   const lookahead = Math.max(1, Math.round(sampleRate * 0.005))
   const releaseCoef = Math.exp(-1 / (sampleRate * LIMITER_RELEASE_SEC))
-  const ctx = new OfflineAudioContext(numberOfChannels, length, sampleRate)
-  const out = ctx.createBuffer(numberOfChannels, length, sampleRate)
-
-  const inputs = Array.from({ length: numberOfChannels }, (_, ch) => buffer.getChannelData(ch))
-  const outputs = inputs.map(() => new Float32Array(length))
-  const delays = inputs.map(() => new Float32Array(lookahead))
-  const writeIndices = inputs.map(() => 0)
+  const delays = channels.map(() => new Float32Array(lookahead))
+  const writeIndices = channels.map(() => 0)
   let gain = 1
 
-  for (let i = 0; i < length; i++) {
+  for (let i = 0; i < channelLen; i++) {
     let peak = 0
-    for (let ch = 0; ch < numberOfChannels; ch++) {
-      const sample = inputs[ch][i]
+    for (let ch = 0; ch < numCh; ch++) {
+      const sample = channels[ch][i]
       delays[ch][writeIndices[ch]] = sample
       const abs = Math.abs(sample)
       if (abs > peak) peak = abs
     }
 
     const neededGain = peak > LIMITER_CEILING_LINEAR ? LIMITER_CEILING_LINEAR / peak : 1
-    if (neededGain < gain) {
-      gain = neededGain
-    } else {
-      gain = releaseCoef * gain + (1 - releaseCoef) * 1
-    }
+    gain = neededGain < gain
+      ? neededGain
+      : releaseCoef * gain + (1 - releaseCoef)
 
-    for (let ch = 0; ch < numberOfChannels; ch++) {
+    for (let ch = 0; ch < numCh; ch++) {
       const readIndex = (writeIndices[ch] + 1) % lookahead
       const limited = delays[ch][readIndex] * gain
-      outputs[ch][i] = Math.max(-LIMITER_CEILING_LINEAR, Math.min(LIMITER_CEILING_LINEAR, limited))
+      channels[ch][i] = Math.max(-LIMITER_CEILING_LINEAR, Math.min(LIMITER_CEILING_LINEAR, limited))
       writeIndices[ch] = readIndex
     }
   }
-
-  for (let ch = 0; ch < numberOfChannels; ch++) {
-    out.copyToChannel(outputs[ch], ch)
-  }
-  return out
 }
 
-function measureBufferLUFS(buffer: AudioBuffer): number {
-  return new LUFSAnalyzer().analyze(buffer)
+function measureLimitedLUFS(preLimiterBuffer: AudioBuffer, gainDb: number): number {
+  const channels = Array.from(
+    { length: preLimiterBuffer.numberOfChannels },
+    (_, ch) => new Float32Array(preLimiterBuffer.getChannelData(ch)),
+  )
+  applyGainInPlace(channels, gainDb)
+  limitChannelsInPlace(channels, preLimiterBuffer.sampleRate)
+  return new LUFSAnalyzer().analyze(
+    bufferFromChannels(channels, preLimiterBuffer.sampleRate),
+  )
 }
 
 /**
  * Mirrors Transcoder pass-1 loudness references for export-identical gain staging.
- *
- * makeupDb / postCompTrimDb follow the FFmpeg pass-1 references.
- * gainDb starts at the export formula (target − postEq) then is corrected by
- * simulating the preview limiter so final LU-I matches the export file (post-alimiter).
+ * Uses a short analysis segment so long recordings stay responsive.
  */
 export async function computeExportGainStaging(
   buffer: AudioBuffer,
@@ -298,8 +309,11 @@ export async function computeExportGainStaging(
   params: ProcessingParams,
   limiterTarget: number,
 ): Promise<ExportGainStaging> {
+  const resampled = await resampleToPreviewRate(buffer)
+  const segment = sliceForAnalysis(resampled)
   const analyzer = new LUFSAnalyzer()
-  const postEqBuffer = await renderPostEqBuffer(buffer, inputGainDb, params)
+
+  const postEqBuffer = await renderPostEqBuffer(segment, inputGainDb, params)
   const postEq = analyzer.analyze(postEqBuffer)
 
   let makeupDb = 0
@@ -324,28 +338,11 @@ export async function computeExportGainStaging(
     postCompTrimDb,
     makeupDb,
   )
-  const preLimiter = measureBufferLUFS(preLimiterBuffer)
 
-  // Export formula — correct so preview LU-I matches FFmpeg alimiter (asc=1) output.
   let gainDb = Math.max(-30, Math.min(30, limiterTarget - postEq))
   const exportFinalTarget = limiterTarget - FFMPEG_ALIMITER_ASC_LUFS_DROP
-  const gained = applyGainDb(preLimiterBuffer, gainDb)
-  const limited = applyPreviewStyleLimiter(gained)
-  const postLimiter = measureBufferLUFS(limited)
+  const postLimiter = measureLimitedLUFS(preLimiterBuffer, gainDb)
   gainDb = Math.max(-30, Math.min(30, gainDb - (postLimiter - exportFinalTarget)))
-
-  if (import.meta.env.DEV) {
-    console.info('[PreviewGain]', {
-      postEq: postEq.toFixed(1),
-      makeupDb: makeupDb.toFixed(1),
-      postCompTrimDb: postCompTrimDb.toFixed(1),
-      preLimiter: preLimiter.toFixed(1),
-      postLimiterUncorrected: postLimiter.toFixed(1),
-      exportFinalTarget: exportFinalTarget.toFixed(1),
-      gainDb: gainDb.toFixed(1),
-      target: limiterTarget,
-    })
-  }
 
   return { makeupDb, gainDb, postCompTrimDb }
 }
