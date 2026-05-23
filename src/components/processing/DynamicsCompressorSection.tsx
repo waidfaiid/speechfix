@@ -30,12 +30,6 @@ export function DynamicsCompressorSection() {
         title={compressionStage2Tooltip(store.compressionAmount, isMixed)}
       />
 
-      {isMixed && store.compressionEnabled && (
-        <p className="text-[10px] text-accent/70 -mt-2">
-          Gottesdienst-Modus – Stufe 1 max. 4:1, Stufe 2 Threshold +6 dB angehoben.
-        </p>
-      )}
-
       {/* Stats — above the scale, color-matched to markers */}
       <div className="flex items-center gap-2 text-[11px] font-semibold leading-none">
         {/* Original swatch + label */}

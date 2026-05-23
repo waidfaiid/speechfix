@@ -309,8 +309,12 @@ export async function computeExportGainStaging(
   params: ProcessingParams,
   limiterTarget: number,
 ): Promise<ExportGainStaging> {
-  const resampled = await resampleToPreviewRate(buffer)
-  const segment = sliceForAnalysis(resampled)
+  // IMPORTANT: slice BEFORE resampling.
+  // Resampling the full buffer first would create a huge OfflineAudioContext
+  // (e.g. ~700 MB for a 30-min file at 48 kHz) and crash the iOS tab.
+  // Slicing to 45 s first keeps the OfflineAudioContext under ~20 MB.
+  const segment = sliceForAnalysis(buffer)
+  const resampled = await resampleToPreviewRate(segment)
   const analyzer = new LUFSAnalyzer()
 
   const postEqBuffer = await renderPostEqBuffer(segment, inputGainDb, params)

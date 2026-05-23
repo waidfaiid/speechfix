@@ -164,10 +164,13 @@ export class AudioEngine {
     this.ctx = await audioContextManager.initOnUserGesture()
     this.buildGraph()
     this.startKeepAlive()
-    // Load RNNoise WASM asynchronously — audio plays with dry bypass until ready.
-    this.initRnnoise().catch((err) => {
-      console.warn('[RNNoise] init failed; noise slider will have no effect in preview:', err)
-    })
+    // RNNoise is hard-coded for 48 kHz (480-sample frames). Skip on iOS where
+    // we run the AudioContext at 22 050 Hz to stay within the memory budget.
+    if (this.ctx.sampleRate === 48000) {
+      this.initRnnoise().catch((err) => {
+        console.warn('[RNNoise] init failed; noise slider will have no effect in preview:', err)
+      })
+    }
   }
 
   private buildGraph(): void {

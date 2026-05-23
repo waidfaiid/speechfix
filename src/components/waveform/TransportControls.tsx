@@ -144,7 +144,7 @@ export function TransportControls() {
         {/* — Row 2: Trim controls — flat single row each side — */}
         <div className="flex items-center gap-2">
 
-          {/* Anfang (left): [Knob] [✂] [−3] [+3] */}
+          {/* Anfang (left): [Knob] [−3] [✂] [+3] */}
           <div className="flex items-center gap-1 flex-1 min-w-0">
             <RotaryKnob
               value={trimStart}
@@ -153,6 +153,7 @@ export function TransportControls() {
               label="Anfang kürzen"
               large
             />
+            <button onClick={() => adjustTrimStart(-3)} className={mobileAdjCls} aria-label="−3 s Anfang">−3</button>
             <button
               onClick={setTrimHereStart}
               className={cn(
@@ -165,17 +166,15 @@ export function TransportControls() {
             >
               <Scissors size={14} />
             </button>
-            <button onClick={() => adjustTrimStart(-3)} className={mobileAdjCls} aria-label="−3 s Anfang">−3</button>
             <button onClick={() => adjustTrimStart(3)}  className={mobileAdjCls} aria-label="+3 s Anfang">+3</button>
           </div>
 
           {/* Divider */}
           <div className="w-px self-stretch bg-card-border shrink-0" />
 
-          {/* Ende (right): [−3] [+3] [✂] [Knob] */}
+          {/* Ende (right): [−3] [✂] [+3] [Knob] */}
           <div className="flex items-center gap-1 flex-1 min-w-0">
             <button onClick={() => adjustTrimEnd(-3)} className={mobileAdjCls} aria-label="−3 s Ende">−3</button>
-            <button onClick={() => adjustTrimEnd(3)}  className={mobileAdjCls} aria-label="+3 s Ende">+3</button>
             <button
               onClick={setTrimHereEnd}
               className={cn(
@@ -188,6 +187,7 @@ export function TransportControls() {
             >
               <Scissors size={14} />
             </button>
+            <button onClick={() => adjustTrimEnd(3)}  className={mobileAdjCls} aria-label="+3 s Ende">+3</button>
             <RotaryKnob
               value={trimEndCut}
               max={maxTrim}

@@ -1,4 +1,4 @@
-import { Radio, Volume2, SlidersHorizontal, Sparkles, Target, AudioWaveform, Mic, Music, Loader2, AlertCircle, Wand2, RotateCcw } from 'lucide-react'
+import { Radio, Volume2, SlidersHorizontal, Sparkles, Target, AudioWaveform, Mic, Music, Loader2, AlertCircle, Wand2, RotateCcw, Waves, Flame, Zap } from 'lucide-react'
 import { useProcessingStore } from '@/store/useProcessingStore'
 import { useAudioStore } from '@/store/useAudioStore'
 import { useUIStore } from '@/store/useUIStore'
@@ -202,11 +202,6 @@ export function ProcessingPanel() {
             ))}
           </div>
         </div>
-        <p className="text-[10px] text-text-secondary">
-          {store.contentType === 'mixed'
-            ? 'Sanftere Kompression – Musik- und Gesangspassagen werden geschont.'
-            : 'Optimiert für reine Sprach- und Predigtaufnahmen.'}
-        </p>
       </div>
 
       {isOriginalMode && (
@@ -281,30 +276,32 @@ export function ProcessingPanel() {
           enabled={store.exciterEnabled}
           onToggle={store.setExciterEnabled}
           displayValue={`${Math.round(store.exciterAmount * 100)}%`}
-        >
-          <div className="flex gap-2 pt-1">
-            {([
-              { id: 'auto', label: 'Natürlich', sub: 'Wärme + Präsenz' },
-              { id: 'tube', label: 'Wärme', sub: 'Röhre · rund & körperreich' },
-              { id: 'tape', label: 'Präsenz', sub: 'Band · klar & durchsetzend' },
-            ] as const).map(({ id, label, sub }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => store.setExciterMode(id)}
-                className={cn(
-                  'flex-1 py-1.5 px-1 rounded-pill transition-colors text-center',
-                  store.exciterMode === id
-                    ? 'bg-accent/20 text-accent border border-accent/30'
-                    : 'bg-slider-track text-text-secondary hover:text-text-primary',
-                )}
-              >
-                <span className="block text-xs font-medium leading-tight">{label}</span>
-                <span className="block text-[10px] leading-tight opacity-70 mt-0.5">{sub}</span>
-              </button>
-            ))}
-          </div>
-        </ProcessingSlider>
+          action={
+            <div className="flex gap-1 ml-1">
+              {([
+                { id: 'auto', label: 'Natürlich', icon: <Waves size={9} />, title: 'Wärme + Präsenz' },
+                { id: 'tube', label: 'Wärme',     icon: <Flame size={9} />, title: 'Röhre · rund & körperreich' },
+                { id: 'tape', label: 'Präsenz',   icon: <Zap   size={9} />, title: 'Band · klar & durchsetzend' },
+              ] as const).map(({ id, label, icon, title }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => store.setExciterMode(id)}
+                  title={title}
+                  className={cn(
+                    'flex items-center gap-1 px-1.5 py-0.5 rounded-pill text-[10px] font-medium transition-colors whitespace-nowrap border',
+                    store.exciterMode === id
+                      ? 'bg-accent/20 text-accent border-accent/30'
+                      : 'bg-slider-track text-text-secondary hover:text-text-primary border-transparent',
+                  )}
+                >
+                  {icon}
+                  {label}
+                </button>
+              ))}
+            </div>
+          }
+        />
 
         {/* Ziel-Lautheit + Limiter-Status — below Exciter, above Export */}
         <div className="bg-card border border-card-border rounded-card p-4 space-y-4">
