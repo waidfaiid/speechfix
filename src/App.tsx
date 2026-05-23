@@ -14,6 +14,8 @@ import { InstallPrompt } from '@/components/ui/InstallPrompt'
 import { useFileStore } from '@/store/useFileStore'
 import { useAudioStore } from '@/store/useAudioStore'
 import { audioEngine } from '@/audio/AudioEngine'
+import { ffmpegManager } from '@/audio/ffmpeg/FFmpegManager'
+import { isIOS } from '@/utils/mobileAudio'
 import { useAudioEngine } from '@/hooks/useAudioEngine'
 import { useFFmpegLoader } from '@/hooks/useFFmpegLoader'
 import { useLTASAnalysis } from '@/hooks/useLTASAnalysis'
@@ -148,7 +150,11 @@ function WorkspaceView() {
           </p>
         </div>
         <button
-          onClick={() => { audioEngine.init().catch(() => {}); inputRef.current?.click() }}
+          onClick={() => {
+            audioEngine.init().catch(() => {})
+            if (isIOS()) ffmpegManager.load().catch(() => {})
+            inputRef.current?.click()
+          }}
           className="flex items-center gap-1.5 text-xs text-accent border border-accent/40 rounded-pill px-2.5 py-1 hover:bg-accent/10 transition-colors ml-4 shrink-0"
         >
           <Plus size={12} />

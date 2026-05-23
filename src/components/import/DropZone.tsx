@@ -2,6 +2,8 @@ import { useRef, useState, useCallback } from 'react'
 import { Upload, Music } from 'lucide-react'
 import { useFileStore } from '@/store/useFileStore'
 import { audioEngine } from '@/audio/AudioEngine'
+import { ffmpegManager } from '@/audio/ffmpeg/FFmpegManager'
+import { isIOS } from '@/utils/mobileAudio'
 import { cn } from '@/utils/cn'
 import { Button } from '@/components/ui/Button'
 
@@ -72,6 +74,7 @@ export function DropZone() {
             // calls decodeAudioData(). Without this the context stays suspended and
             // decodeAudioData() silently hangs on iPhone.
             audioEngine.init().catch(() => {})
+            if (isIOS()) ffmpegManager.load().catch(() => {})
             inputRef.current?.click()
           }}
         >

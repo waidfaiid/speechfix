@@ -124,22 +124,11 @@ export async function analyzeLTAS(
     await tmpCtx.close()
   }
 
-  // Mix down to mono.
-  // For mono files: use getChannelData(0) directly — no 617 MB copy needed.
+  // Mix down per FFT frame — never allocate a full-length mono copy (OOM on iOS).
   const sampleRate = audioBuffer.sampleRate
   const numChannels = audioBuffer.numberOfChannels
   const length = audioBuffer.length
-  const mono: Float32Array = numChannels === 1
-    ? audioBuffer.getChannelData(0)
-    : (() => {
-        const m = new Float32Array(length)
-        for (let ch = 0; ch < numChannels; ch++) {
-          const chData = audioBuffer.getChannelData(ch)
-          for (let n = 0; n < length; n++) m[n] += chData[n]
-        }
-        for (let n = 0; n < length; n++) m[n] /= numChannels
-        return m
-      })()
+  const channelData = Array.from({ length: numChannels }, (_, ch) => audioBuffer.getChannelData(ch))
 
   const binToGrid = buildBinToGrid(sampleRate)
   const gridSum = new Float64Array(GRID_POINTS)
@@ -161,10 +150,13 @@ export async function analyzeLTAS(
   for (let frameIdx = 0; frameIdx < numFrames; frameIdx++) {
     const start = frameIdx * stride * HOP
 
-    // Fill + window
+    // Fill + window (mix channels in-frame to avoid a full-length mono buffer)
     let rmsSum = 0
     for (let i = 0; i < FFT_SIZE; i++) {
-      const s = mono[start + i] * HANN_WINDOW[i]
+      let sample = 0
+      for (let ch = 0; ch < numChannels; ch++) sample += channelData[ch][start + i]
+      sample /= numChannels
+      const s = sample * HANN_WINDOW[i]
       re[i] = s
       im[i] = 0
       rmsSum += s * s

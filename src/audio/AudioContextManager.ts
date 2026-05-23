@@ -1,3 +1,5 @@
+import { IOS_PREVIEW_SAMPLE_RATE, isIOS } from '@/utils/mobileAudio'
+
 type StateListener = (state: AudioContextState) => void
 
 /**
@@ -41,14 +43,8 @@ class AudioContextManager {
 
     const AudioCtx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
 
-    // iOS Safari decodes audio into an AudioBuffer at the context's sample rate.
-    // A 30-minute stereo file at 48 kHz produces a ~700 MB decoded buffer, which
-    // exceeds iOS Safari's per-tab memory budget and kills the page.
-    // At 22 050 Hz the same file decodes to ~320 MB, which fits comfortably on
-    // iPhone 11+ (4 GB RAM).  Speech quality is unaffected; export still uses
-    // FFmpeg at full quality independently of this context rate.
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && typeof window !== 'undefined'
-    const sampleRate = isIOS ? 22050 : 48000
+    // iOS preview runs at 16 kHz — export still uses FFmpeg at full quality.
+    const sampleRate = isIOS() ? IOS_PREVIEW_SAMPLE_RATE : 48_000
 
     this.ctx = new AudioCtx({ sampleRate, latencyHint: 'interactive' })
 

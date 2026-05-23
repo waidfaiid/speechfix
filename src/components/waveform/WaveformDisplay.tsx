@@ -118,10 +118,11 @@ function renderWaveform(
   const visibleCount = Math.max(1, endSample - startSample)
   const samplesPerPx = visibleCount / w
   const mid = h / 2
+  const scanStride = Math.max(1, Math.floor(visibleCount / Math.max(w * 16, 2048)))
 
-  // Peak normalisation across visible window
+  // Peak normalisation across visible window (strided for long recordings)
   let peak = 0.001
-  for (let i = startSample; i < endSample; i++) {
+  for (let i = startSample; i < endSample; i += scanStride) {
     const abs = Math.abs(data[i])
     if (abs > peak) peak = abs
   }
@@ -129,8 +130,9 @@ function renderWaveform(
   for (let x = 0; x < w; x++) {
     const s = startSample + Math.floor(x * samplesPerPx)
     const e = Math.min(endSample - 1, startSample + Math.ceil((x + 1) * samplesPerPx))
+    const innerStride = Math.max(1, Math.floor((e - s + 1) / 128))
     let mn = 0, mx = 0
-    for (let i = s; i <= e; i++) {
+    for (let i = s; i <= e; i += innerStride) {
       const v = data[i]
       if (v < mn) mn = v
       if (v > mx) mx = v
