@@ -4,7 +4,7 @@ import type { ProcessingParams, ExportOptions } from '@/types/processing.types'
 import type { BiquadFilterType } from '@/types/audio.types'
 import { applySpectralSubtraction } from '../analysis/HumAnalyzer'
 import { DYNAMICS_WORKING_LEVEL_LUFS } from '../analysis/dynamicsMeter'
-import { isIOS, AUDIO_CONTEXT_SAMPLE_RATE } from '@/utils/mobileAudio'
+import { isIOS, AUDIO_CONTEXT_SAMPLE_RATE, estimateDurationSec, estimateDecodedBytes } from '@/utils/mobileAudio'
 import { diagStart, diagStep, diagEnd, diagError } from '@/utils/exportDiagnostics'
 
 const QUALITY_BITRATE: Record<string, Record<string, string>> = {
@@ -871,6 +871,144 @@ class StepProgressReporter {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Chunked pre-pass for large files on iOS
+// ---------------------------------------------------------------------------
+
+/**
+ * Memory-bounded pre-pass for iOS: decodes, filters, and denoises audio in
+ * 2-minute chunks, encoding each to FLAC in FFmpeg's virtual FS. A concat
+ * list file is created so subsequent FFmpeg calls (LUFS measurement, final
+ * encode) can stream through the chunks without holding everything in memory.
+ *
+ * Peak WASM FS: source file + one raw chunk (~23 MB) + accumulated FLAC
+ * chunks (~5-8 MB each). Peak JS: one 2-min AudioBuffer (~23 MB) + RNNoise
+ * processing buffers. Total stays well under 200 MB even for hour-long files.
+ */
+async function chunkedPrePass(
+  file: File,
+  params: ProcessingParams,
+  trimStart: number | undefined,
+  trimEnd: number | undefined,
+  stamp: number,
+  humNoiseProfile: Float32Array | null,
+): Promise<{ concatListName: string, chunkNames: string[], inputFormatArgs: string[] }> {
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? 'mp3'
+  const srcName = `exp_src_${stamp}.${ext}`
+  const sampleRate = AUDIO_CONTEXT_SAMPLE_RATE
+  const CHUNK_SEC = 120
+
+  diagStep('chunked_write_source', `${(file.size / 1024 / 1024).toFixed(1)}MB`)
+  await ffmpegManager.writeFile(srcName, file)
+
+  const needsRnnoise = params.noiseEnabled && params.noiseAmount > 0
+  const needsPreFilters = params.humEnabled || params.eqEnabled
+  const needsSpectralSub =
+    params.humEnabled &&
+    params.humAutoMode &&
+    params.humDetectedFreqs.length > 0 &&
+    humNoiseProfile !== null
+
+  const chunkNames: string[] = []
+  let chunkIdx = 0
+  const effectiveStart = trimStart ?? 0
+
+  for (let startSec = effectiveStart; ; startSec += CHUNK_SEC) {
+    // Respect trim end
+    if (trimEnd != null && startSec >= trimEnd) break
+    const duration = trimEnd != null
+      ? Math.min(CHUNK_SEC, trimEnd - startSec)
+      : CHUNK_SEC
+
+    // ── Decode this chunk via FFmpeg ────────────────────────────────────
+    const rawChunkName = `exp_raw_${stamp}_${chunkIdx}.f32le`
+    diagStep(`chunk_${chunkIdx}_decode`, `ss=${startSec} t=${duration}`)
+
+    await ffmpegManager.exec([
+      '-ss', String(startSec),
+      '-t', String(duration),
+      '-i', srcName,
+      '-ac', '1', '-ar', String(sampleRate),
+      '-f', 'f32le', '-y', rawChunkName,
+    ])
+
+    const raw = await ffmpegManager.readFile(rawChunkName)
+    await ffmpegManager.deleteFile(rawChunkName)
+
+    if (raw.length === 0) {
+      diagStep(`chunk_${chunkIdx}_empty_eof`)
+      break
+    }
+
+    const sampleCount = Math.floor(raw.length / 4)
+    diagStep(`chunk_${chunkIdx}_decoded`, `${sampleCount} samples = ${(raw.length / 1024 / 1024).toFixed(1)}MB`)
+
+    // ── Copy into AudioBuffer ──────────────────────────────────────────
+    const samples = new Float32Array(raw.buffer, (raw as Uint8Array).byteOffset, sampleCount)
+    let buffer = new AudioBuffer({ length: sampleCount, sampleRate, numberOfChannels: 1 })
+    buffer.copyToChannel(samples.slice() as Float32Array<ArrayBuffer>, 0)
+
+    // ── Apply pre-filters (hum/EQ) ────────────────────────────────────
+    if (needsPreFilters) {
+      diagStep(`chunk_${chunkIdx}_prefilter`)
+      buffer = await applyPreFiltersOffline(buffer, params)
+    }
+
+    // ── Spectral subtraction ──────────────────────────────────────────
+    if (needsSpectralSub && humNoiseProfile) {
+      diagStep(`chunk_${chunkIdx}_spectral_sub`)
+      buffer = await applySpectralSubtractionToBuffer(buffer, humNoiseProfile, params.humSubtractionAlpha)
+    }
+
+    // ── RNNoise denoising ─────────────────────────────────────────────
+    if (needsRnnoise) {
+      diagStep(`chunk_${chunkIdx}_rnnoise`)
+      buffer = await applyRnnoiseDenoising(buffer, params.noiseAmount, params.noiseLatencyMs)
+    }
+
+    // ── Encode processed chunk to FLAC in WASM FS ─────────────────────
+    const procRawName = `exp_proc_${stamp}_${chunkIdx}.f32le`
+    const channelData = buffer.getChannelData(0)
+    await ffmpegManager.writeFile(procRawName, new Uint8Array(
+      channelData.buffer, channelData.byteOffset, channelData.byteLength,
+    ))
+
+    const flacName = `exp_flac_${stamp}_${chunkIdx}.flac`
+    await ffmpegManager.exec([
+      '-f', 'f32le', '-ar', String(sampleRate), '-ac', '1',
+      '-i', procRawName,
+      '-c:a', 'flac', '-y', flacName,
+    ])
+    await ffmpegManager.deleteFile(procRawName)
+    chunkNames.push(flacName)
+
+    diagStep(`chunk_${chunkIdx}_done`, `→ ${flacName}`)
+    chunkIdx++
+
+    // End of file: chunk shorter than expected
+    if (sampleCount < duration * sampleRate * 0.95) break
+
+    // Yield for GC to reclaim AudioBuffer + raw bytes
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+
+  // Free original file from WASM FS
+  await ffmpegManager.deleteFile(srcName)
+  diagStep('chunked_source_freed', `${chunkIdx} chunks total`)
+
+  // Create concat demuxer list — subsequent FFmpeg calls use this as input
+  const listContent = chunkNames.map(n => `file '${n}'`).join('\n')
+  const concatListName = `exp_concat_${stamp}.txt`
+  await ffmpegManager.writeFile(concatListName, new TextEncoder().encode(listContent))
+  diagStep('chunked_concat_list_created')
+
+  return {
+    concatListName,
+    chunkNames,
+    inputFormatArgs: ['-f', 'concat', '-safe', '0'],
+  }
+}
+
 /**
  * Decode a file via FFmpeg at the given sample rate, returning a mono AudioBuffer.
  * Used for the export pre-pass on iOS where ctx.decodeAudioData can OOM on large files.
@@ -1002,11 +1140,45 @@ export async function exportFile(
   let inputName: string
   let denoisedInputName: string | null = null
   let preFiltersApplied = false
-  // When the denoised audio is written as raw f32le (zero-copy on mono),
+  // When the denoised audio is written as raw f32le or uses a concat demuxer,
   // FFmpeg needs explicit format args before -i.
   let inputFormatArgs: string[] = []
+  // FLAC chunk filenames to clean up after export (chunked path only)
+  let chunkCleanupNames: string[] = []
+  let concatListCleanup: string | null = null
 
-  if (needsJsPrePass) {
+  // On iOS, large files cannot be decoded to raw PCM in one shot — WASM
+  // linear memory cannot hold the full decoded output. Use the chunked
+  // pipeline that processes 2-minute segments independently.
+  const estimatedDecoded = estimateDecodedBytes(estimateDurationSec(file), AUDIO_CONTEXT_SAMPLE_RATE, 1)
+  const useChunked = isIOS() && needsJsPrePass && estimatedDecoded > 100 * 1024 * 1024
+
+  if (useChunked) {
+    diagStep('chunked_prepass_begin', `estimated=${(estimatedDecoded / 1024 / 1024).toFixed(0)}MB`)
+    reporter.reportSubProgress(0)
+    try {
+      const result = await chunkedPrePass(
+        file, params,
+        hasTrim && options.trimStart && options.trimStart > 0 ? options.trimStart : undefined,
+        hasTrim && options.trimEnd && options.trimEnd > 0 ? options.trimEnd : undefined,
+        stamp, humNoiseProfile,
+      )
+      inputName = result.concatListName
+      inputFormatArgs = result.inputFormatArgs
+      chunkCleanupNames = result.chunkNames
+      concatListCleanup = result.concatListName
+      preFiltersApplied = true
+      diagStep('chunked_prepass_done', `${result.chunkNames.length} FLAC chunks`)
+      // Consume all pre-pass progress steps
+      reporter.completeStep()
+    } catch (err) {
+      diagError(err)
+      console.warn('[Chunked pre-pass] failed, falling back to original audio:', err)
+      inputName = `input_${stamp}.${ext}`
+      await ffmpegManager.writeFile(inputName, file)
+      reporter.completeStep()
+    }
+  } else if (needsJsPrePass) {
     diagStep('prepass_begin', `rnnoise=${needsRnnoise} spectralSub=${needsSpectralSub} iOS=${isIOS()}`)
     reporter.reportSubProgress(0)
     const ctx = audioContextManager.context
@@ -1043,7 +1215,6 @@ export async function exportFile(
         } else {
           processed = decoded
         }
-        // Free decoded buffer if it differs from processed (pre-filters created a new one)
         decoded = null!
         await new Promise(resolve => setTimeout(resolve, 0))
 
@@ -1065,8 +1236,6 @@ export async function exportFile(
         }
 
         // Write processed audio to FFmpeg FS.
-        // Mono: zero-copy raw f32le (avoids ~N×4 byte WAV allocation).
-        // Multi-channel: fall back to WAV with interleaved samples.
         diagStep('write_denoised_start', `ch=${processed.numberOfChannels} len=${processed.length}`)
         if (processed.numberOfChannels === 1) {
           const channelData = processed.getChannelData(0)
@@ -1083,7 +1252,6 @@ export async function exportFile(
         }
         inputName = denoisedInputName
         preFiltersApplied = true
-        // Free processed buffer — data is now in FFmpeg FS
         processed = null!
         await new Promise(resolve => setTimeout(resolve, 0))
         diagStep('write_denoised_done')
@@ -1093,7 +1261,7 @@ export async function exportFile(
         console.warn('[Export pre-pass] processing failed, falling back to original audio:', err)
         inputName = `input_${stamp}.${ext}`
         await ffmpegManager.writeFile(inputName, file)
-        reporter.completeStep() // consume remaining pre-pass steps
+        reporter.completeStep()
       }
     } else {
       diagStep('prepass_no_audiocontext')
@@ -1103,7 +1271,6 @@ export async function exportFile(
     }
   } else {
     diagStep('no_prepass_write_input')
-    // No JS pre-pass needed — just write the file
     inputName = `input_${stamp}.${ext}`
     await ffmpegManager.writeFile(inputName, file)
     reporter.completeStep() // "Audio vorbereiten"
@@ -1126,7 +1293,7 @@ export async function exportFile(
   // When JS pre-pass was used, the denoised audio is quieter. Use original
   // file's LUFS as the normalisation reference so speech level stays consistent.
   let normRefLUFS = measuredLUFS
-  if (preFiltersApplied && denoisedInputName) {
+  if (preFiltersApplied) {
     const origRefName = `input_lufsref_${stamp}.${ext}`
     await ffmpegManager.writeFile(origRefName, file)
     const origMeasureTrim: string[] = []
@@ -1264,6 +1431,13 @@ export async function exportFile(
   await ffmpegManager.deleteFile(inputName)
   if (denoisedInputName && denoisedInputName !== inputName) {
     await ffmpegManager.deleteFile(denoisedInputName)
+  }
+  // Clean up FLAC chunks and concat list from chunked pre-pass
+  for (const name of chunkCleanupNames) {
+    await ffmpegManager.deleteFile(name)
+  }
+  if (concatListCleanup && concatListCleanup !== inputName) {
+    await ffmpegManager.deleteFile(concatListCleanup)
   }
   await ffmpegManager.deleteFile(outputName)
 
