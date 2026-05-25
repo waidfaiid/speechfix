@@ -5,6 +5,7 @@ import type { BiquadFilterType } from '@/types/audio.types'
 import { applySpectralSubtraction } from '../analysis/HumAnalyzer'
 import { DYNAMICS_WORKING_LEVEL_LUFS } from '../analysis/dynamicsMeter'
 import { isIOS, AUDIO_CONTEXT_SAMPLE_RATE } from '@/utils/mobileAudio'
+import { diagStart, diagStep, diagEnd, diagError } from '@/utils/exportDiagnostics'
 
 const QUALITY_BITRATE: Record<string, Record<string, string>> = {
   mp3:  { low: '96k',  medium: '192k', high: '320k',  lossless: '320k' },
@@ -880,7 +881,10 @@ async function decodeViaFfmpegForExport(file: File, sampleRate: number): Promise
   const inputName = `exp_dec_in_${stamp}.${ext}`
   const outputName = `exp_dec_out_${stamp}.f32le`
 
+  diagStep('decode_write_input', `${(file.size / 1024 / 1024).toFixed(1)}MB → WASM FS`)
   await ffmpegManager.writeFile(inputName, file)
+
+  diagStep('decode_ffmpeg_exec', `→ f32le mono ${sampleRate}Hz`)
   await ffmpegManager.exec([
     '-i', inputName,
     '-ac', '1',
@@ -891,7 +895,9 @@ async function decodeViaFfmpegForExport(file: File, sampleRate: number): Promise
 
   // Free input from WASM FS immediately — only the decoded output is needed.
   await ffmpegManager.deleteFile(inputName)
+  diagStep('decode_input_freed')
 
+  diagStep('decode_read_output')
   let raw: Uint8Array | undefined = await ffmpegManager.readFile(outputName)
 
   // Free decoded output from WASM FS — data is now in JS.
@@ -900,18 +906,22 @@ async function decodeViaFfmpegForExport(file: File, sampleRate: number): Promise
   const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
   raw = undefined
   const sampleCount = Math.floor(bytes.byteLength / 4)
+  diagStep('decode_output_read', `${sampleCount} samples = ${(bytes.byteLength / 1024 / 1024).toFixed(1)}MB`)
 
   // AudioBuffer constructor avoids the ~N×4 byte internal allocation that
   // OfflineAudioContext would make just to serve as a createBuffer() factory.
+  diagStep('decode_create_audiobuffer')
   const buffer = new AudioBuffer({ length: sampleCount, sampleRate, numberOfChannels: 1 })
 
   // Direct Float32Array view on the raw bytes — same endianness (LE on ARM/x86).
   const samples = new Float32Array(bytes.buffer, bytes.byteOffset, sampleCount)
   buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0)
 
+  diagStep('decode_copy_done_gc_yield')
   // Let GC reclaim the raw byte array before the caller allocates more.
   await new Promise(resolve => setTimeout(resolve, 0))
 
+  diagStep('decode_complete')
   return buffer
 }
 
@@ -958,6 +968,7 @@ export async function exportFile(
   /** Averaged noise magnitude spectrum from HumAnalyzer – required for spectral subtraction export */
   humNoiseProfile: Float32Array | null = null,
 ): Promise<Blob> {
+  diagStart(file.name, file.size)
   if (!ffmpegManager.isLoaded) await ffmpegManager.load()
 
   const stamp = Date.now()
@@ -996,6 +1007,7 @@ export async function exportFile(
   let inputFormatArgs: string[] = []
 
   if (needsJsPrePass) {
+    diagStep('prepass_begin', `rnnoise=${needsRnnoise} spectralSub=${needsSpectralSub} iOS=${isIOS()}`)
     reporter.reportSubProgress(0)
     const ctx = audioContextManager.context
     if (ctx) {
@@ -1004,22 +1016,29 @@ export async function exportFile(
         // decodeAudioData on large files while ensuring RNNoise gets 48 kHz input.
         let decoded: AudioBuffer
         if (isIOS()) {
+          diagStep('decode_ios_start')
           decoded = await decodeViaFfmpegForExport(file, AUDIO_CONTEXT_SAMPLE_RATE)
         } else {
+          diagStep('decode_browser_start')
           const rawArrayBuffer = await file.arrayBuffer()
+          diagStep('decode_browser_arraybuffer', `${(rawArrayBuffer.byteLength / 1024 / 1024).toFixed(1)}MB`)
           decoded = await ctx.decodeAudioData(rawArrayBuffer)
         }
+        diagStep('decode_done', `ch=${decoded.numberOfChannels} len=${decoded.length} sr=${decoded.sampleRate} dur=${(decoded.length / decoded.sampleRate).toFixed(1)}s`)
 
         // Trim EARLY so RNNoise only processes the exported region
         if (hasTrim) {
           decoded = trimAudioBuffer(decoded, options.trimStart ?? 0, options.trimEnd)
+          diagStep('trim_done', `len=${decoded.length}`)
         }
         reporter.completeStep() // "Audio dekodieren & trimmen"
 
         // Apply hum notch filters + EQ offline before RNNoise
         let processed: AudioBuffer
         if (params.humEnabled || params.eqEnabled) {
+          diagStep('prefilters_start', `hum=${params.humEnabled} eq=${params.eqEnabled}`)
           processed = await applyPreFiltersOffline(decoded, params)
+          diagStep('prefilters_done')
           reporter.completeStep() // "Hum/EQ offline anwenden"
         } else {
           processed = decoded
@@ -1030,20 +1049,25 @@ export async function exportFile(
 
         // Spectral subtraction
         if (needsSpectralSub && humNoiseProfile) {
+          diagStep('spectral_sub_start')
           const alpha = params.humSubtractionAlpha
           processed = await applySpectralSubtractionToBuffer(processed, humNoiseProfile, alpha)
+          diagStep('spectral_sub_done')
           reporter.completeStep() // "Spektrale Subtraktion"
         }
 
         // RNNoise neural denoising (if enabled)
         if (needsRnnoise) {
+          diagStep('rnnoise_start', `amount=${params.noiseAmount} latency=${params.noiseLatencyMs}ms`)
           processed = await applyRnnoiseDenoising(processed, params.noiseAmount, params.noiseLatencyMs)
+          diagStep('rnnoise_done')
           reporter.completeStep() // "Rauschunterdrückung"
         }
 
         // Write processed audio to FFmpeg FS.
         // Mono: zero-copy raw f32le (avoids ~N×4 byte WAV allocation).
         // Multi-channel: fall back to WAV with interleaved samples.
+        diagStep('write_denoised_start', `ch=${processed.numberOfChannels} len=${processed.length}`)
         if (processed.numberOfChannels === 1) {
           const channelData = processed.getChannelData(0)
           const pcmBytes = new Uint8Array(
@@ -1062,19 +1086,23 @@ export async function exportFile(
         // Free processed buffer — data is now in FFmpeg FS
         processed = null!
         await new Promise(resolve => setTimeout(resolve, 0))
+        diagStep('write_denoised_done')
         reporter.completeStep() // "Denoised Audio schreiben"
       } catch (err) {
+        diagError(err)
         console.warn('[Export pre-pass] processing failed, falling back to original audio:', err)
         inputName = `input_${stamp}.${ext}`
         await ffmpegManager.writeFile(inputName, file)
         reporter.completeStep() // consume remaining pre-pass steps
       }
     } else {
+      diagStep('prepass_no_audiocontext')
       inputName = `input_${stamp}.${ext}`
       await ffmpegManager.writeFile(inputName, file)
       reporter.completeStep()
     }
   } else {
+    diagStep('no_prepass_write_input')
     // No JS pre-pass needed — just write the file
     inputName = `input_${stamp}.${ext}`
     await ffmpegManager.writeFile(inputName, file)
@@ -1082,6 +1110,7 @@ export async function exportFile(
   }
 
   // --- Pass 1: measure loudness references for makeup + target LUFS ---
+  diagStep('lufs_pass1_start')
   // When trim is active and we did NOT do a JS pre-pass, we trim the input
   // file for measurement via FFmpeg's -ss/-to so measurements reflect the
   // actual exported region. When JS pre-pass ran, the buffer is already trimmed.
@@ -1092,6 +1121,7 @@ export async function exportFile(
   }
 
   const measuredLUFS = await measureSourceLUFSWithTrim(inputName, measureTrimArgs, inputFormatArgs)
+  diagStep('lufs_pass1_done', `LUFS=${measuredLUFS}`)
 
   // When JS pre-pass was used, the denoised audio is quieter. Use original
   // file's LUFS as the normalisation reference so speech level stays consistent.
@@ -1174,6 +1204,7 @@ export async function exportFile(
   ].filter(Boolean).join(',')
 
   // --- Pass 2: export ---
+  diagStep('pass2_encode_start', `format=${options.format} quality=${options.quality}`)
   ffmpegManager.setProgressCallback((p) => {
     reporter.reportSubProgress(p / 100)
   })
@@ -1225,8 +1256,10 @@ export async function exportFile(
   args.push('-y', outputName)
 
   await ffmpegManager.exec(args)
+  diagStep('pass2_encode_done')
   reporter.completeStep() // "Exportieren & Limiter"
 
+  diagStep('read_output')
   const data = await ffmpegManager.readFile(outputName)
   await ffmpegManager.deleteFile(inputName)
   if (denoisedInputName && denoisedInputName !== inputName) {
@@ -1237,11 +1270,13 @@ export async function exportFile(
   ffmpegManager.setProgressCallback(null)
 
   if (data.length === 0) {
+    diagError('FFmpeg produced empty output')
     throw new Error('FFmpeg hat eine leere Ausgabedatei erzeugt. Bitte prüfen Sie die Filter-Einstellungen.')
   }
 
   reporter.completeStep() // "Wird abgeschlossen"
   reporter.finish()
+  diagEnd()
 
   const mimeTypes: Record<string, string> = {
     mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac',

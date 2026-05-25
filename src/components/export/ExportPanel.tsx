@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from 'react'
-import { Download, Shield, DownloadCloud, Target, ChevronDown, Pencil } from 'lucide-react'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { Download, Shield, DownloadCloud, Target, ChevronDown, Pencil, AlertTriangle, Copy, X } from 'lucide-react'
 import { useProcessingStore } from '@/store/useProcessingStore'
 import { useFileStore } from '@/store/useFileStore'
 import { useAudioStore } from '@/store/useAudioStore'
@@ -12,6 +12,7 @@ import JSZip from 'jszip'
 import type { ExportFormat, ExportQuality, SampleRate } from '@/types/processing.types'
 import type { BatchFile } from '@/types/file.types'
 import { cn } from '@/utils/cn'
+import { getCrashLog, clearCrashLog } from '@/utils/exportDiagnostics'
 
 const FORMATS: ExportFormat[] = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg']
 const LUFS_OPTIONS = [-14, -16] as const
@@ -191,6 +192,53 @@ function LimiterSection({
   )
 }
 
+function CrashLogBanner() {
+  const [log, setLog] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => { setLog(getCrashLog()) }, [])
+
+  const handleCopy = useCallback(() => {
+    if (!log) return
+    navigator.clipboard.writeText(log).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }, [log])
+
+  const handleDismiss = useCallback(() => {
+    clearCrashLog()
+    setLog(null)
+  }, [])
+
+  if (!log) return null
+
+  return (
+    <div className="mx-3 mb-3 bg-red-500/10 border border-red-500/30 rounded-xl p-3 text-xs">
+      <div className="flex items-center gap-2 mb-2">
+        <AlertTriangle size={14} className="text-red-400 shrink-0" />
+        <span className="text-red-300 font-bold">Export-Crash erkannt</span>
+        <button onClick={handleDismiss} className="ml-auto text-red-400/60 hover:text-red-300">
+          <X size={14} />
+        </button>
+      </div>
+      <p className="text-red-300/80 mb-2">
+        Der letzte Export wurde durch einen Seitenabsturz abgebrochen. Kopiere das Log und sende es zur Analyse:
+      </p>
+      <pre className="bg-black/40 rounded-lg p-2 text-[10px] text-red-200/90 font-mono overflow-x-auto max-h-48 overflow-y-auto whitespace-pre leading-relaxed">
+        {log}
+      </pre>
+      <button
+        onClick={handleCopy}
+        className="mt-2 flex items-center gap-1.5 text-red-300 hover:text-white bg-red-500/20 hover:bg-red-500/30 px-3 py-1.5 rounded-lg transition text-xs font-medium"
+      >
+        <Copy size={12} />
+        {copied ? 'Kopiert!' : 'Log kopieren'}
+      </button>
+    </div>
+  )
+}
+
 export function ExportPanel() {
   const { exportOptions, setExportOptions, getParams, humNoiseProfile, limiterEnabled, setLimiterEnabled, limiterTarget, setLimiterTarget, limiterInterventionDb } = useProcessingStore()
   const { files, updateFile, setExportProgress, setIsExporting } = useFileStore()
@@ -287,6 +335,7 @@ export function ExportPanel() {
 
   return (
     <div className="px-3 pb-6 space-y-4">
+      <CrashLogBanner />
       <div className="mod-card border-t-2 border-t-accent/30 !pb-2 !pt-6">
         <div className="card-inner">
           
