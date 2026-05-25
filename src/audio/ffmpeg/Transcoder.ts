@@ -721,8 +721,9 @@ function parseLUFS(logs: string[]): number | null {
  * Measure the integrated LUFS after applying a filter chain.
  * Supports optional -ss/-to args for trimmed measurement.
  */
-async function measureFilteredLUFSWithTrim(inputName: string, afChain: string, trimArgs: string[] = []): Promise<number | null> {
+async function measureFilteredLUFSWithTrim(inputName: string, afChain: string, trimArgs: string[] = [], inputFormatArgs: string[] = []): Promise<number | null> {
   const logs = await ffmpegManager.execCaptureLogs([
+    ...inputFormatArgs,
     ...trimArgs,
     '-i', inputName,
     '-af', afChain,
@@ -734,8 +735,9 @@ async function measureFilteredLUFSWithTrim(inputName: string, afChain: string, t
 /**
  * Measure the integrated LUFS of the source file with optional trim.
  */
-async function measureSourceLUFSWithTrim(inputName: string, trimArgs: string[] = []): Promise<number> {
+async function measureSourceLUFSWithTrim(inputName: string, trimArgs: string[] = [], inputFormatArgs: string[] = []): Promise<number> {
   const logs = await ffmpegManager.execCaptureLogs([
+    ...inputFormatArgs,
     ...trimArgs,
     '-i', inputName,
     '-af', `aresample=${PREVIEW_SAMPLE_RATE},ebur128=peak=true`,
@@ -988,6 +990,9 @@ export async function exportFile(
   let inputName: string
   let denoisedInputName: string | null = null
   let preFiltersApplied = false
+  // When the denoised audio is written as raw f32le (zero-copy on mono),
+  // FFmpeg needs explicit format args before -i.
+  let inputFormatArgs: string[] = []
 
   if (needsJsPrePass) {
     reporter.reportSubProgress(0)
@@ -1018,6 +1023,9 @@ export async function exportFile(
         } else {
           processed = decoded
         }
+        // Free decoded buffer if it differs from processed (pre-filters created a new one)
+        decoded = null!
+        await new Promise(resolve => setTimeout(resolve, 0))
 
         // Spectral subtraction
         if (needsSpectralSub && humNoiseProfile) {
@@ -1032,11 +1040,27 @@ export async function exportFile(
           reporter.completeStep() // "Rauschunterdrückung"
         }
 
-        const wavBytes = audioBufferToWavBytes(processed)
-        denoisedInputName = `input_denoised_${stamp}.wav`
-        await ffmpegManager.writeFile(denoisedInputName, wavBytes)
+        // Write processed audio to FFmpeg FS.
+        // Mono: zero-copy raw f32le (avoids ~N×4 byte WAV allocation).
+        // Multi-channel: fall back to WAV with interleaved samples.
+        if (processed.numberOfChannels === 1) {
+          const channelData = processed.getChannelData(0)
+          const pcmBytes = new Uint8Array(
+            channelData.buffer, channelData.byteOffset, channelData.byteLength,
+          )
+          denoisedInputName = `input_denoised_${stamp}.f32le`
+          await ffmpegManager.writeFile(denoisedInputName, pcmBytes)
+          inputFormatArgs = ['-f', 'f32le', '-ar', String(processed.sampleRate), '-ac', '1']
+        } else {
+          const wavBytes = audioBufferToWavBytes(processed)
+          denoisedInputName = `input_denoised_${stamp}.wav`
+          await ffmpegManager.writeFile(denoisedInputName, wavBytes)
+        }
         inputName = denoisedInputName
         preFiltersApplied = true
+        // Free processed buffer — data is now in FFmpeg FS
+        processed = null!
+        await new Promise(resolve => setTimeout(resolve, 0))
         reporter.completeStep() // "Denoised Audio schreiben"
       } catch (err) {
         console.warn('[Export pre-pass] processing failed, falling back to original audio:', err)
@@ -1066,7 +1090,7 @@ export async function exportFile(
     if (options.trimEnd && options.trimEnd > 0) measureTrimArgs.push('-to', options.trimEnd.toFixed(3))
   }
 
-  const measuredLUFS = await measureSourceLUFSWithTrim(inputName, measureTrimArgs)
+  const measuredLUFS = await measureSourceLUFSWithTrim(inputName, measureTrimArgs, inputFormatArgs)
 
   // When JS pre-pass was used, the denoised audio is quieter. Use original
   // file's LUFS as the normalisation reference so speech level stays consistent.
@@ -1098,7 +1122,7 @@ export async function exportFile(
   // Measure postEQ LUFS — only if hum/EQ are applied via FFmpeg (not pre-baked)
   let postEqLUFS: number
   if (!preFiltersApplied && (params.humEnabled || params.eqEnabled)) {
-    postEqLUFS = (await measureFilteredLUFSWithTrim(inputName, `${preChain},ebur128=peak=true`, measureTrimArgs)) ?? measuredLUFS
+    postEqLUFS = (await measureFilteredLUFSWithTrim(inputName, `${preChain},ebur128=peak=true`, measureTrimArgs, inputFormatArgs)) ?? measuredLUFS
   } else {
     postEqLUFS = measuredLUFS
   }
@@ -1116,6 +1140,7 @@ export async function exportFile(
         false,
       )
       const logs = await ffmpegManager.execCaptureLogs([
+        ...inputFormatArgs,
         ...measureTrimArgs,
         '-i', inputName,
         '-filter_complex', fc,
@@ -1129,7 +1154,7 @@ export async function exportFile(
         ...buildCompressionFilters(params),
         'ebur128=peak=true',
       ].filter(Boolean).join(',')
-      processedLUFS = (await measureFilteredLUFSWithTrim(inputName, chain, measureTrimArgs)) ?? postEqLUFS
+      processedLUFS = (await measureFilteredLUFSWithTrim(inputName, chain, measureTrimArgs, inputFormatArgs)) ?? postEqLUFS
     }
     reporter.completeStep() // "Dynamik analysieren"
   }
@@ -1157,6 +1182,7 @@ export async function exportFile(
   const encodeTrimArgs: string[] = (hasTrim && !preFiltersApplied) ? measureTrimArgs : []
 
   const args = [
+    ...inputFormatArgs,
     ...encodeTrimArgs,
     '-i', inputName,
     '-ar', String(options.sampleRate),
