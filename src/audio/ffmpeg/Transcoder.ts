@@ -613,46 +613,81 @@ async function applyRnnoiseDenoising(
 
   const { numberOfChannels, length, sampleRate } = audioBuffer
   const delaySamples = Math.round(latencyMs * sampleRate / 1000)
+
+  // Process in chunks to keep peak memory bounded on mobile devices.
+  // 30 s at 48 kHz ≈ 5.5 MB per OfflineAudioContext instead of the full file.
+  const CHUNK_SAMPLES = 30 * sampleRate
+  // RNNoise is stateful (GRU hidden state). Feed a 1-second warm-up prefix
+  // from the preceding audio so the model reaches steady state before the
+  // output region begins — avoids audible quality dips at chunk boundaries.
+  const WARMUP_SAMPLES = sampleRate
+
   const outputChannels: Float32Array[] = []
 
   for (let ch = 0; ch < numberOfChannels; ch++) {
     const input = audioBuffer.getChannelData(ch)
-
-    // ── Stage 1: render 100 % denoised output via OfflineAudioContext ──────
-    const offCtx = new OfflineAudioContext(1, length, sampleRate)
-    await offCtx.audioWorklet.addModule('/rnnoise.worklet.js')
-
-    const chBuf = offCtx.createBuffer(1, length, sampleRate)
-    chBuf.copyToChannel(input as Float32Array<ArrayBuffer>, 0)
-    const source = offCtx.createBufferSource()
-    source.buffer = chBuf
-
-    const rnnoiseNode = new AudioWorkletNode(offCtx, 'rnnoise', {
-      channelCountMode: 'explicit',
-      channelCount: 1,
-      channelInterpretation: 'speakers',
-      numberOfInputs: 1,
-      numberOfOutputs: 1,
-      outputChannelCount: [1],
-      processorOptions: { module: _rnnoiseModule },
-    })
-
-    source.connect(rnnoiseNode)
-    rnnoiseNode.connect(offCtx.destination)
-    source.start()
-
-    const rendered = await offCtx.startRendering()
-    const rnOut = rendered.getChannelData(0)
-
-    // ── Stage 2: sample-accurate dry / wet mix ──────────────────────────────
-    // rnOut[i] is the denoised version of input[i − delaySamples].
-    // Reading rnOut[i + delaySamples] therefore aligns it with input[i].
     const mixed = new Float32Array(length)
-    for (let i = 0; i < length; i++) {
-      const wetIdx = i + delaySamples
-      const wet    = wetIdx < length ? rnOut[wetIdx] : 0
-      mixed[i]     = wet * noiseAmount + input[i] * (1 - noiseAmount)
+
+    let chunkStart = 0
+    while (chunkStart < length) {
+      const chunkEnd = Math.min(chunkStart + CHUNK_SAMPLES, length)
+      const chunkLen = chunkEnd - chunkStart
+
+      // Warm-up: include preceding samples so RNNoise hidden state is primed.
+      const warmupStart = Math.max(0, chunkStart - WARMUP_SAMPLES)
+      const warmupLen = chunkStart - warmupStart
+
+      // Extend past chunkEnd by delaySamples so the latency-compensated read
+      // never falls outside the rendered buffer (except at the file tail).
+      const processEnd = Math.min(chunkEnd + delaySamples, length)
+      const totalLen = processEnd - warmupStart
+
+      // ── Render this chunk through RNNoise ──────────────────────────────
+      const offCtx = new OfflineAudioContext(1, totalLen, sampleRate)
+      await offCtx.audioWorklet.addModule('/rnnoise.worklet.js')
+
+      const chBuf = offCtx.createBuffer(1, totalLen, sampleRate)
+      chBuf.getChannelData(0).set(
+        input.subarray(warmupStart, processEnd) as Float32Array<ArrayBuffer>,
+      )
+
+      const source = offCtx.createBufferSource()
+      source.buffer = chBuf
+
+      const rnnoiseNode = new AudioWorkletNode(offCtx, 'rnnoise', {
+        channelCountMode: 'explicit',
+        channelCount: 1,
+        channelInterpretation: 'speakers',
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        processorOptions: { module: _rnnoiseModule },
+      })
+
+      source.connect(rnnoiseNode)
+      rnnoiseNode.connect(offCtx.destination)
+      source.start()
+
+      const rendered = await offCtx.startRendering()
+      const rnOut = rendered.getChannelData(0)
+
+      // ── Dry / wet mix for the output region of this chunk ──────────────
+      // rnOut[j] is the denoised version of the input at position j − delaySamples
+      // within the chunk. Reading rnOut[warmupLen + i + delaySamples] aligns
+      // the denoised sample with input[chunkStart + i].
+      for (let i = 0; i < chunkLen; i++) {
+        const rnIdx = warmupLen + i + delaySamples
+        const wet = rnIdx < totalLen ? rnOut[rnIdx] : 0
+        mixed[chunkStart + i] = wet * noiseAmount + input[chunkStart + i] * (1 - noiseAmount)
+      }
+
+      chunkStart = chunkEnd
+
+      // Yield to the event loop so the GC can reclaim the OfflineAudioContext
+      // and its backing buffers before we allocate the next chunk.
+      await new Promise(resolve => setTimeout(resolve, 0))
     }
+
     outputChannels.push(mixed)
   }
 

@@ -116,7 +116,7 @@ function renderWaveformFromPeaks(
   canvas.height = Math.floor(h * dpr)
   ctx.scale(dpr, dpr)
 
-  ctx.fillStyle = '#0f172a'
+  ctx.fillStyle = '#0f0e0d'
   ctx.fillRect(0, 0, w, h)
 
   const { peaks, peakCount } = peakData
@@ -473,7 +473,7 @@ export function WaveformDisplay({ file, collapseProgress = 0 }: WaveformDisplayP
         style={{
           minHeight: `${waveH}px`,
           borderRadius: `${borderR}px`,
-          border: cp < 0.9 ? '1px solid #33302d' : '1px solid rgba(51,48,45,0.3)',
+          border: cp < 0.9 ? '1px solid #464240' : '1px solid rgba(70,66,64,0.3)',
         }}
         data-waveform-container
         ref={containerRef}
