@@ -129,6 +129,7 @@ export function useAudioEngine() {
         state.exciterMode === prev.exciterMode &&
         state.desibilanceEnabled === prev.desibilanceEnabled &&
         state.desibilanceAmount === prev.desibilanceAmount &&
+        state.limiterEnabled === prev.limiterEnabled &&
         state.limiterTarget === prev.limiterTarget
       ) return
       schedule()

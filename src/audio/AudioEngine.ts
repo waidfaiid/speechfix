@@ -639,7 +639,11 @@ export class AudioEngine {
     this.stop()
     const effectiveEnd = this.trimEnd ?? (this.buffer?.duration ?? Infinity)
     this.pausedAt = Math.max(this.trimStart, Math.min(effectiveEnd, time))
-    if (wasPlaying) this.play()
+    if (wasPlaying) {
+      this.play()
+    } else {
+      this.onTimeUpdate?.(this.pausedAt)
+    }
   }
 
   setPinkNoiseEnabled(enabled: boolean, mixLinear: number): void {
@@ -791,8 +795,19 @@ export class AudioEngine {
 
     if (this.limiterWorklet) {
       const p = this.limiterWorklet.parameters
-      p.get('ceiling')?.setTargetAtTime(dbToLinear(-1), now, 0.02)
-      p.get('releaseMs')?.setTargetAtTime(50, now, 0.05)
+      if (params.limiterEnabled) {
+        p.get('ceiling')?.setTargetAtTime(dbToLinear(-1), now, 0.02)
+        p.get('releaseMs')?.setTargetAtTime(50, now, 0.05)
+      } else {
+        p.get('ceiling')?.setTargetAtTime(1, now, 0.02)
+      }
+    } else if (this.limiterCompressor) {
+      if (params.limiterEnabled) {
+        this.limiterCompressor.threshold.setTargetAtTime(-1, now, 0.02)
+        this.limiterCompressor.ratio.setTargetAtTime(20, now, 0.02)
+      } else {
+        this.limiterCompressor.ratio.setTargetAtTime(1, now, 0.02)
+      }
     }
   }
 

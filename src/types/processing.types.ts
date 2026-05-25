@@ -56,6 +56,7 @@ export interface ProcessingParams {
   /** Detected sibilance peak frequency in Hz (auto-set by LTAS analysis) */
   desibilanceFreq: number
 
+  limiterEnabled: boolean
   limiterTarget: number
   contentType: ContentType
 }
