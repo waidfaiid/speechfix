@@ -90,7 +90,7 @@ export function EQProPanel() {
                 </button>
               )}
               <Dialog.Close asChild>
-                <button className="p-2 text-text-secondary hover:text-text-primary transition-colors" aria-label="Schließen">
+                <button className="p-2 text-stone-400 hover:text-text-primary transition-colors" aria-label="Schließen">
                   <X size={20} />
                 </button>
               </Dialog.Close>
@@ -148,7 +148,7 @@ export function EQProPanel() {
                     'px-3 py-1.5 rounded-pill text-xs font-medium transition-colors',
                     selectedId === band.id
                       ? 'bg-accent text-white'
-                      : 'bg-slider-track text-text-secondary hover:text-text-primary',
+                      : 'bg-slider-track text-stone-400 hover:text-text-primary',
                     !band.enabled && 'opacity-50',
                   )}
                 >

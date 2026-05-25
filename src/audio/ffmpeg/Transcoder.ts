@@ -692,8 +692,7 @@ async function applyRnnoiseDenoising(
   }
 
   // Assemble channels into the output AudioBuffer (no rendering, memory only).
-  const assembleCtx = new OfflineAudioContext(numberOfChannels, length, sampleRate)
-  const outBuf = assembleCtx.createBuffer(numberOfChannels, length, sampleRate)
+  const outBuf = new AudioBuffer({ length, sampleRate, numberOfChannels })
   for (let ch = 0; ch < numberOfChannels; ch++) {
     outBuf.copyToChannel(outputChannels[ch] as Float32Array<ArrayBuffer>, ch)
   }
@@ -881,36 +880,39 @@ async function decodeViaFfmpegForExport(file: File, sampleRate: number): Promise
   const inputName = `exp_dec_in_${stamp}.${ext}`
   const outputName = `exp_dec_out_${stamp}.f32le`
 
-  try {
-    await ffmpegManager.writeFile(inputName, file)
-    await ffmpegManager.exec([
-      '-i', inputName,
-      '-ac', '1',
-      '-ar', String(sampleRate),
-      '-f', 'f32le',
-      outputName,
-    ])
+  await ffmpegManager.writeFile(inputName, file)
+  await ffmpegManager.exec([
+    '-i', inputName,
+    '-ac', '1',
+    '-ar', String(sampleRate),
+    '-f', 'f32le',
+    outputName,
+  ])
 
-    const raw = await ffmpegManager.readFile(outputName)
-    const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
-    const sampleCount = Math.floor(bytes.byteLength / 4)
+  // Free input from WASM FS immediately — only the decoded output is needed.
+  await ffmpegManager.deleteFile(inputName)
 
-    const offCtx = new OfflineAudioContext(1, Math.max(1, sampleCount), sampleRate)
-    const buffer = offCtx.createBuffer(1, sampleCount, sampleRate)
-    const channel = buffer.getChannelData(0)
-    const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 4)
-    const blockSize = 65_536
-    for (let off = 0; off < sampleCount; off += blockSize) {
-      const end = Math.min(sampleCount, off + blockSize)
-      for (let i = off; i < end; i++) {
-        channel[i] = view.getFloat32(i * 4, true)
-      }
-    }
-    return buffer
-  } finally {
-    await ffmpegManager.deleteFile(inputName)
-    await ffmpegManager.deleteFile(outputName)
-  }
+  let raw: Uint8Array | undefined = await ffmpegManager.readFile(outputName)
+
+  // Free decoded output from WASM FS — data is now in JS.
+  await ffmpegManager.deleteFile(outputName)
+
+  const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
+  raw = undefined
+  const sampleCount = Math.floor(bytes.byteLength / 4)
+
+  // AudioBuffer constructor avoids the ~N×4 byte internal allocation that
+  // OfflineAudioContext would make just to serve as a createBuffer() factory.
+  const buffer = new AudioBuffer({ length: sampleCount, sampleRate, numberOfChannels: 1 })
+
+  // Direct Float32Array view on the raw bytes — same endianness (LE on ARM/x86).
+  const samples = new Float32Array(bytes.buffer, bytes.byteOffset, sampleCount)
+  buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0)
+
+  // Let GC reclaim the raw byte array before the caller allocates more.
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  return buffer
 }
 
 /**
@@ -926,8 +928,7 @@ function trimAudioBuffer(buffer: AudioBuffer, startSec: number, endSec: number |
   const trimmedLength = endSample - startSample
   if (trimmedLength <= 0) return buffer
 
-  const offCtx = new OfflineAudioContext(buffer.numberOfChannels, trimmedLength, sr)
-  const out = offCtx.createBuffer(buffer.numberOfChannels, trimmedLength, sr)
+  const out = new AudioBuffer({ length: trimmedLength, sampleRate: sr, numberOfChannels: buffer.numberOfChannels })
   for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
     out.copyToChannel(
       buffer.getChannelData(ch).subarray(startSample, endSample) as Float32Array<ArrayBuffer>,

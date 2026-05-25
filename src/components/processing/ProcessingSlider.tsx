@@ -43,7 +43,7 @@ export function ProcessingSlider({
           <div className="flex items-center gap-2 shrink-0">
             <div className={cn("flex items-center gap-2 transition-opacity duration-300", !enabled && "opacity-40")}>
               {rightAddon}
-              <span className="font-tech text-xs text-text-secondary w-12 text-right">
+              <span className="font-tech text-xs text-stone-400 w-12 text-right">
                 {displayValue ?? `${pct}%`}
               </span>
             </div>
@@ -69,6 +69,7 @@ export function ProcessingSlider({
             step={step}
             className="flex-1"
             disabled={!enabled}
+            style={{ '--slider-pct': `${pct}%` } as React.CSSProperties}
           />
           <span className="text-[10px] font-tech text-text-secondary">{max}</span>
         </div>

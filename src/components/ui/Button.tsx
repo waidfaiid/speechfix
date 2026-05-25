@@ -16,7 +16,7 @@ export function Button({ variant = 'primary', size = 'md', className, ...props }
         {
           'bg-accent text-white hover:bg-accent-hover active:scale-95': variant === 'primary',
           'bg-card border border-card-border text-text-primary hover:bg-[#1f2937] active:scale-95': variant === 'secondary',
-          'text-text-secondary hover:text-text-primary hover:bg-card active:scale-95': variant === 'ghost',
+          'text-stone-300 hover:text-text-primary hover:bg-card active:scale-95': variant === 'ghost',
           'bg-red-900 text-red-200 hover:bg-red-800 active:scale-95': variant === 'danger',
         },
         {

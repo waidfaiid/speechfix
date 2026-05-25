@@ -473,7 +473,7 @@ export function WaveformDisplay({ file, collapseProgress = 0 }: WaveformDisplayP
         style={{
           minHeight: `${waveH}px`,
           borderRadius: `${borderR}px`,
-          border: cp < 0.9 ? '1px solid #464240' : '1px solid rgba(70,66,64,0.3)',
+          border: cp < 0.9 ? '1px solid #4d4a47' : '1px solid rgba(77,74,71,0.3)',
         }}
         data-waveform-container
         ref={containerRef}

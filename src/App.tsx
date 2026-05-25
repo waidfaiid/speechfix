@@ -81,7 +81,7 @@ function WorkspaceView() {
         style={{
           top: `${stickyTop}px`,
           boxShadow: p > 0.05
-            ? `0 1px 0 rgba(70,66,64,${Math.min(0.8, p * 2)})`
+            ? `0 1px 0 rgba(77,74,71,${Math.min(0.8, p * 2)})`
             : 'none',
         }}
       >

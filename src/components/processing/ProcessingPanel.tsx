@@ -178,14 +178,14 @@ export function ProcessingPanel() {
           <button 
             type="button"
             onClick={() => store.setContentType('speech')}
-            className={cn("flex-1 py-2 text-xs font-medium rounded-md flex justify-center items-center gap-1 relative z-10 transition-colors", store.contentType === 'speech' ? "text-white" : "text-text-secondary hover:text-white")}
+            className={cn("flex-1 py-2 text-xs font-medium rounded-md flex justify-center items-center gap-1 relative z-10 transition-colors", store.contentType === 'speech' ? "text-white" : "text-stone-400 hover:text-white")}
           >
             <Mic size={12} className={store.contentType === 'speech' ? "text-accent" : ""} /> Redner
           </button>
           <button 
             type="button"
             onClick={() => store.setContentType('mixed')}
-            className={cn("flex-1 py-2 text-xs font-medium rounded-md flex justify-center items-center gap-1 relative z-10 transition-colors", store.contentType === 'mixed' ? "text-white" : "text-text-secondary hover:text-white")}
+            className={cn("flex-1 py-2 text-xs font-medium rounded-md flex justify-center items-center gap-1 relative z-10 transition-colors", store.contentType === 'mixed' ? "text-white" : "text-stone-400 hover:text-white")}
           >
             <Music size={12} className={store.contentType === 'mixed' ? "text-accent" : ""} /> Live
           </button>
@@ -199,14 +199,14 @@ export function ProcessingPanel() {
           <button 
             type="button"
             onClick={() => { setAbMode('original'); audioEngine.setABMode('original') }}
-            className={cn("flex-1 py-2 text-xs font-medium rounded-md relative z-10 transition-colors", abMode === 'original' ? "text-accent" : "text-text-secondary hover:text-white")}
+            className={cn("flex-1 py-2 text-xs font-medium rounded-md relative z-10 transition-colors", abMode === 'original' ? "text-accent" : "text-stone-400 hover:text-white")}
           >
             Original
           </button>
           <button 
             type="button"
             onClick={() => { setAbMode('processed'); audioEngine.setABMode('processed') }}
-            className={cn("flex-1 py-2 text-xs font-medium rounded-md relative z-10 transition-colors", abMode === 'processed' ? "text-accent" : "text-text-secondary hover:text-white")}
+            className={cn("flex-1 py-2 text-xs font-medium rounded-md relative z-10 transition-colors", abMode === 'processed' ? "text-accent" : "text-stone-400 hover:text-white")}
           >
             Bearbeitet
           </button>
@@ -293,7 +293,7 @@ export function ProcessingPanel() {
                   'flex-1 py-1.5 text-[10px] font-medium rounded-md transition-colors',
                   store.exciterMode === id
                     ? 'bg-card-elevated text-white shadow-sm border border-card-border'
-                    : 'text-text-secondary hover:text-white border border-transparent'
+                    : 'text-stone-400 hover:text-white border border-transparent'
                 )}
               >
                 {label}

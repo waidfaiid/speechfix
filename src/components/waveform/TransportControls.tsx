@@ -174,8 +174,8 @@ export function TransportControls({ collapseProgress = 0 }: TransportControlsPro
   const trimOpacity = Math.max(0, 1 - cp * 2)
   const trimMaxH = Math.round(lerp(48, 0, Math.min(1, cp * 2)))
 
-  const navBtnCls = 'flex-1 min-w-0 rounded-xl font-tech font-medium transition text-text-secondary hover:text-text-primary hover:bg-card active:bg-card-elevated'
-  const edgeBtnCls = 'shrink-0 rounded-xl flex justify-center items-center transition text-text-secondary hover:text-text-primary hover:bg-card active:bg-card-elevated'
+  const navBtnCls = 'flex-1 min-w-0 rounded-xl font-tech font-medium transition text-stone-300 hover:text-white hover:bg-card active:bg-card-elevated'
+  const edgeBtnCls = 'shrink-0 rounded-xl flex justify-center items-center transition text-stone-300 hover:text-white hover:bg-card active:bg-card-elevated'
 
   return (
     <div style={{ padding: `${containerPt}px 12px ${containerPb}px` }}>
@@ -255,11 +255,11 @@ export function TransportControls({ collapseProgress = 0 }: TransportControlsPro
       <div style={{ maxHeight: `${trimMaxH}px`, opacity: trimOpacity, overflow: 'hidden' }}>
         <div className="bg-background rounded-lg p-1 flex justify-between items-center gap-0.5 border border-card-border overflow-hidden">
           <button
-            className="px-1.5 py-2 rounded-md font-tech text-[10px] text-text-secondary hover:text-white transition whitespace-nowrap shrink-0 cursor-ns-resize select-none touch-none"
+            className="px-1.5 py-2 rounded-md font-tech text-[10px] text-stone-300 hover:text-white transition whitespace-nowrap shrink-0 cursor-ns-resize select-none touch-none"
             onMouseDown={trimStartDragHandlers.onMouseDown}
             onTouchStart={trimStartDragHandlers.onTouchStart}
           >{trimStart > 0 ? formatTime(trimStart) : '0:00'}</button>
-          <button onClick={() => adjustTrimStart(-3)} className="flex-1 min-w-0 py-2 rounded-md font-tech text-[10px] text-text-secondary hover:text-white transition bg-card hover:bg-card-elevated">−3</button>
+          <button onClick={() => adjustTrimStart(-3)} className="flex-1 min-w-0 py-2 rounded-md font-tech text-[10px] text-stone-300 hover:text-white transition bg-card hover:bg-card-elevated">−3</button>
           <button
             onClick={setTrimHereStart}
             className={cn("flex-1 min-w-0 py-2 rounded-md flex justify-center transition", trimStart > 0 ? "text-accent bg-accent/20" : "text-text-secondary bg-accent/10 hover:text-accent")}
@@ -267,11 +267,11 @@ export function TransportControls({ collapseProgress = 0 }: TransportControlsPro
           >
             <Scissors size={11} />
           </button>
-          <button onClick={() => adjustTrimStart(3)} className="flex-1 min-w-0 py-2 rounded-md font-tech text-[10px] text-text-secondary hover:text-white transition bg-card hover:bg-card-elevated">+3</button>
+          <button onClick={() => adjustTrimStart(3)} className="flex-1 min-w-0 py-2 rounded-md font-tech text-[10px] text-stone-300 hover:text-white transition bg-card hover:bg-card-elevated">+3</button>
 
           <div className="w-[1px] h-4 bg-card-border mx-0.5 shrink-0"></div>
 
-          <button onClick={() => adjustTrimEnd(-3)} className="flex-1 min-w-0 py-2 rounded-md font-tech text-[10px] text-text-secondary hover:text-white transition bg-card hover:bg-card-elevated">−3</button>
+          <button onClick={() => adjustTrimEnd(-3)} className="flex-1 min-w-0 py-2 rounded-md font-tech text-[10px] text-stone-300 hover:text-white transition bg-card hover:bg-card-elevated">−3</button>
           <button
             onClick={setTrimHereEnd}
             className={cn("flex-1 min-w-0 py-2 rounded-md flex justify-center transition", trimEndCut > 0 ? "text-accent bg-accent/20" : "text-text-secondary bg-accent/10 hover:text-accent")}
@@ -279,9 +279,9 @@ export function TransportControls({ collapseProgress = 0 }: TransportControlsPro
           >
             <Scissors size={11} />
           </button>
-          <button onClick={() => adjustTrimEnd(3)} className="flex-1 min-w-0 py-2 rounded-md font-tech text-[10px] text-text-secondary hover:text-white transition bg-card hover:bg-card-elevated">+3</button>
+          <button onClick={() => adjustTrimEnd(3)} className="flex-1 min-w-0 py-2 rounded-md font-tech text-[10px] text-stone-300 hover:text-white transition bg-card hover:bg-card-elevated">+3</button>
           <button
-            className="px-1.5 py-2 rounded-md font-tech text-[10px] text-text-secondary hover:text-white transition whitespace-nowrap shrink-0 cursor-ns-resize select-none touch-none"
+            className="px-1.5 py-2 rounded-md font-tech text-[10px] text-stone-300 hover:text-white transition whitespace-nowrap shrink-0 cursor-ns-resize select-none touch-none"
             onMouseDown={trimEndDragHandlers.onMouseDown}
             onTouchStart={trimEndDragHandlers.onTouchStart}
           >{trimEnd !== null ? formatTime(trimEnd) : '0:00'}</button>

@@ -135,7 +135,7 @@ function LimiterSection({
               'py-3 rounded-lg font-tech text-xs transition shadow-sm border',
               limiterTarget === val
                 ? 'bg-accent/10 border-accent text-accent font-bold'
-                : 'bg-background border-card-border text-text-secondary hover:text-white'
+                : 'bg-background border-card-border text-stone-300 hover:text-white'
             )}
           >
             {val} LUFS
@@ -171,7 +171,7 @@ function LimiterSection({
               'py-3 rounded-lg font-tech text-xs transition shadow-sm border flex items-center justify-center gap-1.5',
               !isPreset
                 ? 'bg-accent/10 border-accent text-accent font-bold'
-                : 'bg-background border-card-border text-text-secondary hover:text-white'
+                : 'bg-background border-card-border text-stone-300 hover:text-white'
             )}
           >
             {!isPreset ? (

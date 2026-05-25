@@ -6,14 +6,14 @@ export default {
     extend: {
       colors: {
         background: '#0f0e0d',       
-        card: '#222019',     
-        'card-elevated': '#2e2c29',
-        'card-border': '#464240',   
+        card: '#252320',     
+        'card-elevated': '#31302d',
+        'card-border': '#4d4a47',   
         accent: '#f59e0b',   
         'accent-hover': '#d97706',
         'accent-glow': 'rgba(245, 158, 11, 0.2)',
         'text-primary': '#f5f5f4',     
-        'text-secondary': '#c0bbb6',
+        'text-secondary': '#c5c1bc',
         'slider-track': '#1b1a18',
         'slider-thumb': '#f5f5f4',
         success: '#22c55e',
