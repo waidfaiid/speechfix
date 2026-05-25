@@ -1,6 +1,12 @@
-import { X } from 'lucide-react'
 import { useFileStore } from '@/store/useFileStore'
-import { cn } from '@/utils/cn'
+
+function formatTimeLeft(seconds: number): string {
+  if (seconds <= 0) return ''
+  if (seconds < 60) return `~${seconds}s verbleibend`
+  const min = Math.floor(seconds / 60)
+  const sec = seconds % 60
+  return `~${min}:${sec.toString().padStart(2, '0')} verbleibend`
+}
 
 export function ExportProgress() {
   const progress = useFileStore((s) => s.exportProgress)
@@ -9,6 +15,7 @@ export function ExportProgress() {
   if (!isExporting || !progress) return null
 
   const overallPct = Math.round(((progress.fileIndex - 1) / progress.totalFiles) * 100 + progress.stepProgress / progress.totalFiles)
+  const timeLeft = formatTimeLeft(progress.estimatedSecondsLeft)
 
   return (
     <div className="fixed inset-0 bg-black/80 z-50 flex items-end animate-fade-in">
@@ -24,15 +31,20 @@ export function ExportProgress() {
         <div className="space-y-2">
           <div className="flex justify-between text-sm">
             <span className="text-text-secondary truncate max-w-[200px]">{progress.fileName}</span>
-            <span className="text-text-secondary">{progress.stepProgress}%</span>
+            <span className="text-text-secondary font-tech">{progress.stepProgress}%</span>
           </div>
-          <div className="h-2 bg-slider-track rounded-pill overflow-hidden">
+          <div className="h-2.5 bg-slider-track rounded-pill overflow-hidden">
             <div
-              className="h-full bg-accent rounded-pill transition-all duration-300"
+              className="h-full bg-accent rounded-pill transition-[width] duration-500 ease-out"
               style={{ width: `${progress.stepProgress}%` }}
             />
           </div>
-          <p className="text-xs text-text-secondary">{progress.stepLabel}</p>
+          <div className="flex justify-between items-center">
+            <p className="text-xs text-text-secondary">{progress.stepLabel}</p>
+            {timeLeft && (
+              <p className="text-xs text-text-secondary font-tech">{timeLeft}</p>
+            )}
+          </div>
         </div>
 
         {/* Overall progress */}
@@ -44,7 +56,7 @@ export function ExportProgress() {
             </div>
             <div className="h-1 bg-slider-track rounded-pill overflow-hidden">
               <div
-                className="h-full bg-accent/60 rounded-pill transition-all duration-300"
+                className="h-full bg-accent/60 rounded-pill transition-[width] duration-500 ease-out"
                 style={{ width: `${overallPct}%` }}
               />
             </div>

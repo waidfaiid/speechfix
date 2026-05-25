@@ -1,28 +1,44 @@
-import { Wand2 } from 'lucide-react'
+import { AudioLines, Plus } from 'lucide-react'
 import { useFileStore } from '@/store/useFileStore'
+import { audioEngine } from '@/audio/AudioEngine'
+import { ffmpegManager } from '@/audio/ffmpeg/FFmpegManager'
+import { isIOS } from '@/utils/mobileAudio'
+import { useRef } from 'react'
 
 export function Header() {
   const files = useFileStore((s) => s.files)
-  const activeFile = useFileStore((s) => s.getActiveFile())
+  const addFiles = useFileStore((s) => s.addFiles)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   return (
-    <header className="flex items-center justify-between px-4 py-3 border-b border-card-border bg-card sticky top-0 z-40">
-      <div className="flex items-center gap-2">
-        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-accent">
-          <Wand2 size={16} className="text-white" />
-        </div>
-        <span className="font-semibold text-text-primary text-base tracking-tight">SermonFix</span>
+    <header className="flex items-center justify-between px-3 py-4 pt-8 sticky top-0 z-40 bg-background">
+      <div>
+        <h1 className="font-bold text-xl tracking-tight text-white flex items-center gap-2">
+          <div className="relative flex items-center justify-center">
+            <AudioLines className="text-accent w-6 h-6" />
+          </div> 
+          SpeechFix
+        </h1>
       </div>
 
-      {activeFile && (
-        <div className="flex-1 mx-4 min-w-0">
-          <p className="text-text-secondary text-sm truncate text-center">
-            {files.length > 1 ? `${files.length} Dateien` : activeFile.name}
-          </p>
-        </div>
-      )}
-
-      <div className="w-8" />
+      <button 
+        onClick={() => {
+          audioEngine.init().catch(() => {})
+          if (isIOS()) ffmpegManager.load().catch(() => {})
+          inputRef.current?.click()
+        }}
+        className="bg-card-elevated hover:bg-card-border text-xs px-4 py-2 rounded-full flex items-center gap-2 transition border border-card-border text-white"
+      >
+        <Plus className="w-3 h-3" /> Dateien
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".mp3,.wav,.aiff,.flac,.aac,.m4a,.ogg"
+        multiple
+        className="hidden"
+        onChange={(e) => e.target.files && addFiles(Array.from(e.target.files))}
+      />
     </header>
   )
 }

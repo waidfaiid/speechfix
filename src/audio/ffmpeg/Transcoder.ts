@@ -4,6 +4,7 @@ import type { ProcessingParams, ExportOptions } from '@/types/processing.types'
 import type { BiquadFilterType } from '@/types/audio.types'
 import { applySpectralSubtraction } from '../analysis/HumAnalyzer'
 import { DYNAMICS_WORKING_LEVEL_LUFS } from '../analysis/dynamicsMeter'
+import { isIOS, AUDIO_CONTEXT_SAMPLE_RATE } from '@/utils/mobileAudio'
 
 const QUALITY_BITRATE: Record<string, Record<string, string>> = {
   mp3:  { low: '96k',  medium: '192k', high: '320k',  lossless: '320k' },
@@ -834,6 +835,48 @@ class StepProgressReporter {
 }
 
 /**
+ * Decode a file via FFmpeg at the given sample rate, returning a mono AudioBuffer.
+ * Used for the export pre-pass on iOS where ctx.decodeAudioData can OOM on large files.
+ */
+async function decodeViaFfmpegForExport(file: File, sampleRate: number): Promise<AudioBuffer> {
+  const stamp = Date.now()
+  const ext = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : 'mp3'
+  const inputName = `exp_dec_in_${stamp}.${ext}`
+  const outputName = `exp_dec_out_${stamp}.f32le`
+
+  try {
+    await ffmpegManager.writeFile(inputName, file)
+    await ffmpegManager.exec([
+      '-i', inputName,
+      '-ac', '1',
+      '-ar', String(sampleRate),
+      '-f', 'f32le',
+      outputName,
+    ])
+
+    const raw = await ffmpegManager.readFile(outputName)
+    const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
+    const sampleCount = Math.floor(bytes.byteLength / 4)
+
+    const offCtx = new OfflineAudioContext(1, Math.max(1, sampleCount), sampleRate)
+    const buffer = offCtx.createBuffer(1, sampleCount, sampleRate)
+    const channel = buffer.getChannelData(0)
+    const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 4)
+    const blockSize = 65_536
+    for (let off = 0; off < sampleCount; off += blockSize) {
+      const end = Math.min(sampleCount, off + blockSize)
+      for (let i = off; i < end; i++) {
+        channel[i] = view.getFloat32(i * 4, true)
+      }
+    }
+    return buffer
+  } finally {
+    await ffmpegManager.deleteFile(inputName)
+    await ffmpegManager.deleteFile(outputName)
+  }
+}
+
+/**
  * Trim an AudioBuffer to a sub-region [startSec, endSec].
  * Returns the original buffer if no trimming is needed.
  */
@@ -916,8 +959,15 @@ export async function exportFile(
     const ctx = audioContextManager.context
     if (ctx) {
       try {
-        const rawArrayBuffer = await file.arrayBuffer()
-        let decoded = await ctx.decodeAudioData(rawArrayBuffer)
+        // On iOS, use FFmpeg to decode at 48 kHz to avoid Safari OOM from
+        // decodeAudioData on large files while ensuring RNNoise gets 48 kHz input.
+        let decoded: AudioBuffer
+        if (isIOS()) {
+          decoded = await decodeViaFfmpegForExport(file, AUDIO_CONTEXT_SAMPLE_RATE)
+        } else {
+          const rawArrayBuffer = await file.arrayBuffer()
+          decoded = await ctx.decodeAudioData(rawArrayBuffer)
+        }
 
         // Trim EARLY so RNNoise only processes the exported region
         if (hasTrim) {

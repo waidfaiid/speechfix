@@ -1,5 +1,4 @@
 import { useRef, useState, useEffect } from 'react'
-import { Play, Pause, SkipBack, SkipForward, Plus } from 'lucide-react'
 import { Layout } from '@/components/layout/Layout'
 import { DropZone } from '@/components/import/DropZone'
 import { FileList } from '@/components/import/FileList'
@@ -14,179 +13,102 @@ import { InstallPrompt } from '@/components/ui/InstallPrompt'
 import { useFileStore } from '@/store/useFileStore'
 import { useAudioStore } from '@/store/useAudioStore'
 import { audioEngine } from '@/audio/AudioEngine'
-import { ffmpegManager } from '@/audio/ffmpeg/FFmpegManager'
-import { isIOS } from '@/utils/mobileAudio'
 import { useAudioEngine } from '@/hooks/useAudioEngine'
 import { useFFmpegLoader } from '@/hooks/useFFmpegLoader'
 import { useLTASAnalysis } from '@/hooks/useLTASAnalysis'
-import { formatTime } from '@/utils/audioMath'
-import { cn } from '@/utils/cn'
-
-interface StickyPlaybarProps {
-  visible: boolean
-}
-
-function StickyPlaybar({ visible }: StickyPlaybarProps) {
-  const { isPlaying, currentTime, duration, abMode, setAbMode } = useAudioStore()
-
-  function togglePlay() {
-    if (isPlaying) {
-      audioEngine.pause()
-      useAudioStore.getState().setIsPlaying(false)
-    } else {
-      audioEngine.play()
-      useAudioStore.getState().setIsPlaying(true)
-    }
-  }
-
-  function skip(delta: number) {
-    const next = Math.max(0, Math.min(duration, currentTime + delta))
-    audioEngine.seek(next)
-  }
-
-  function seek(e: React.MouseEvent<HTMLDivElement>) {
-    if (duration === 0) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    audioEngine.seek(pct * duration)
-  }
-
-  const progress = duration > 0 ? (currentTime / duration) * 100 : 0
-
-  return (
-    <div
-      className={cn(
-        'sticky top-0 z-20 bg-background/95 backdrop-blur-sm border-b border-card-border',
-        'px-3 py-2 flex items-center gap-2',
-        !visible && 'hidden',
-      )}
-    >
-      {/* Transport */}
-      <button onClick={() => skip(-10)} className="text-text-secondary hover:text-text-primary transition-colors shrink-0" aria-label="-10s">
-        <SkipBack size={16} />
-      </button>
-      <button
-        onClick={togglePlay}
-        className="w-8 h-8 rounded-full bg-accent hover:bg-accent-hover text-white flex items-center justify-center transition-colors shrink-0"
-        aria-label={isPlaying ? 'Pause' : 'Abspielen'}
-      >
-        {isPlaying ? <Pause size={14} /> : <Play size={14} className="translate-x-px" />}
-      </button>
-      <button onClick={() => skip(10)} className="text-text-secondary hover:text-text-primary transition-colors shrink-0" aria-label="+10s">
-        <SkipForward size={16} />
-      </button>
-
-      {/* Progress */}
-      <span className="text-xs text-text-secondary tabular-nums shrink-0 w-9">{formatTime(currentTime)}</span>
-      <div
-        className="flex-1 h-1.5 bg-slider-track rounded-pill overflow-hidden cursor-pointer"
-        onClick={seek}
-        role="slider"
-        aria-label="Abspielen-Position"
-      >
-        <div className="h-full bg-accent rounded-pill transition-none" style={{ width: `${progress}%` }} />
-      </div>
-      <span className="text-xs text-text-secondary tabular-nums shrink-0 w-9 text-right">{formatTime(duration)}</span>
-
-      {/* A/B Compare */}
-      <div className="flex gap-1 shrink-0">
-        {(['original', 'processed'] as const).map((mode) => (
-          <button
-            key={mode}
-            onClick={() => { setAbMode(mode); audioEngine.setABMode(mode) }}
-            className={cn(
-              'px-2 py-1 rounded-pill text-xs font-medium transition-colors',
-              abMode === mode
-                ? 'bg-accent text-white'
-                : 'bg-slider-track text-text-secondary hover:text-text-primary',
-            )}
-          >
-            {mode === 'original' ? 'Orig.' : 'Bear.'}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
+import { lerp } from '@/utils/audioMath'
 
 function WorkspaceView() {
   const activeFile = useFileStore((s) => s.getActiveFile())
-  const files = useFileStore((s) => s.files)
-  const addFiles = useFileStore((s) => s.addFiles)
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  // Observe the player section; show sticky bar when it's out of view
-  const playerRef = useRef<HTMLDivElement>(null)
-  const [showStickyBar, setShowStickyBar] = useState(false)
-
-  useEffect(() => {
-    const el = playerRef.current
-    if (!el) return
-    const observer = new IntersectionObserver(
-      ([entry]) => setShowStickyBar(!entry.isIntersecting),
-      { threshold: 0 },
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [])
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  const [collapseProgress, setCollapseProgress] = useState(0)
+  const [stickyTop, setStickyTop] = useState(0)
 
   useAudioEngine()
   useLTASAnalysis()
 
+  useEffect(() => {
+    const header = document.querySelector('header')
+    if (header) setStickyTop(header.getBoundingClientRect().height)
+
+    let rafId = 0
+    const COLLAPSE_DISTANCE = 140
+
+    function update() {
+      rafId = 0
+      const sentinel = sentinelRef.current
+      if (!sentinel) return
+      const hdr = document.querySelector('header')
+      const hdrH = hdr ? hdr.getBoundingClientRect().height : 0
+      const sentinelTop = sentinel.getBoundingClientRect().top
+      const scrollPast = hdrH - sentinelTop
+      setCollapseProgress(Math.max(0, Math.min(1, scrollPast / COLLAPSE_DISTANCE)))
+    }
+
+    function onScroll() {
+      if (!rafId) rafId = requestAnimationFrame(update)
+    }
+
+    function onResize() {
+      const hdr = document.querySelector('header')
+      if (hdr) setStickyTop(hdr.getBoundingClientRect().height)
+    }
+
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onResize)
+    update()
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', onResize)
+      if (rafId) cancelAnimationFrame(rafId)
+    }
+  }, [])
+
   if (!activeFile) return <DropZone />
 
+  const p = collapseProgress
+  const nameMaxH = Math.round(lerp(60, 0, Math.min(1, p * 2.5)))
+  const nameOpacity = Math.max(0, 1 - p * 2.5)
+
   return (
-    <div className="flex-1 flex flex-col">
+    <div className="flex-1 flex flex-col min-w-0">
+      {/* Sentinel marks original player position */}
+      <div ref={sentinelRef} className="h-4 shrink-0" />
 
-      {/* Compact sticky playbar — shown only when the player scrolls out of view */}
-      <StickyPlaybar visible={showStickyBar} />
-
-      {/* File name + add more */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-card-border">
-        <div className="min-w-0 flex-1">
-          <p className="text-text-primary text-sm font-medium truncate">{activeFile.name}</p>
-          <p className="text-text-secondary text-xs">
-            {files.length > 1 ? `${files.length} Dateien geladen` : 'Datei geladen'}
-          </p>
-        </div>
-        <button
-          onClick={() => {
-            audioEngine.init().catch(() => {})
-            if (isIOS()) ffmpegManager.load().catch(() => {})
-            inputRef.current?.click()
+      {/* Sticky collapsing player */}
+      <div
+        className="sticky z-30 bg-background"
+        style={{
+          top: `${stickyTop}px`,
+          boxShadow: p > 0.05
+            ? `0 1px 0 rgba(51,48,45,${Math.min(0.8, p * 2)})`
+            : 'none',
+        }}
+      >
+        {/* File name — collapses first */}
+        <div
+          style={{
+            maxHeight: `${nameMaxH}px`,
+            opacity: nameOpacity,
+            overflow: 'hidden',
           }}
-          className="flex items-center gap-1.5 text-xs text-accent border border-accent/40 rounded-pill px-2.5 py-1 hover:bg-accent/10 transition-colors ml-4 shrink-0"
         >
-          <Plus size={12} />
-          Dateien
-        </button>
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".mp3,.wav,.aiff,.flac,.aac,.m4a,.ogg"
-          multiple
-          className="hidden"
-          onChange={(e) => e.target.files && addFiles(Array.from(e.target.files))}
-        />
+          <div className="px-3 flex justify-between items-center mb-3 gap-2 pt-2">
+            <div className="font-medium text-sm text-white truncate min-w-0">
+              {activeFile.name}
+            </div>
+            <div className="text-[10px] text-text-secondary bg-background border border-card-border px-2 py-1 rounded-md shrink-0">
+              Geladen
+            </div>
+          </div>
+        </div>
+
+        <WaveformDisplay file={activeFile.file} collapseProgress={p} />
+        <TransportControls collapseProgress={p} />
       </div>
 
-      {/* Player section — observed for visibility to toggle sticky bar */}
-      <div ref={playerRef}>
-        <WaveformDisplay file={activeFile.file} />
-        <TransportControls />
-      </div>
-
-      <div className="h-px bg-card-border mx-4 my-1" />
-
-      {/* Processing */}
       <ProcessingPanel />
-
-      <div className="h-px bg-card-border mx-4 my-1" />
-
-      {/* Export */}
       <ExportPanel />
-
-      {/* Batch file list */}
       <FileList />
     </div>
   )

@@ -78,10 +78,11 @@ function LimiterSection({
 
   function applyCustomValue() {
     const parsed = parseFloat(customValue)
-    if (!isNaN(parsed) && parsed <= 0 && parsed >= -60) {
-      setLimiterTarget(Math.round(parsed))
-      setShowCustom(false)
-    }
+    if (isNaN(parsed)) return
+    const negative = parsed > 0 ? -parsed : parsed
+    const clamped = Math.max(-60, Math.min(0, Math.round(negative)))
+    setLimiterTarget(clamped)
+    setShowCustom(false)
   }
 
   function openCustomInput() {
@@ -176,7 +177,7 @@ function LimiterSection({
             {!isPreset ? (
               <>{limiterTarget} LUFS</>
             ) : (
-              <><Pencil size={10} /> Eigener</>
+              <><Pencil size={10} />cutomized</>
             )}
           </button>
         )}
@@ -259,7 +260,8 @@ export function ExportPanel() {
         const base = isSingle
           ? (exportOptions.filename.trim() || originalBase)
           : originalBase
-        const outName = `${base}${exportOptions.filenameSuffix}.${exportOptions.format}`
+        const suffix = exportOptions.filenameSuffix !== '' ? exportOptions.filenameSuffix : '_fixed'
+        const outName = `${base}${suffix}.${exportOptions.format}`
 
         updateFile(f.id, { status: 'done', outputBlob: blob })
         blobs.push({ name: outName, blob })
@@ -353,15 +355,15 @@ export function ExportPanel() {
                 placeholder={activeFile ? activeFile.name.replace(/\.[^.]+$/, '') : 'dateiname'}
                 className="bg-background border border-card-border p-3 text-sm min-w-0 flex-1 rounded-l-lg focus:outline-none focus:border-accent text-white font-medium"
               />
-              <div className="bg-card-elevated flex items-center border border-l-0 border-card-border rounded-r-lg shrink-0">
+              <div className="flex items-center shrink-0">
                 <input 
                   type="text" 
                   value={exportOptions.filenameSuffix}
                   onChange={(e) => setExportOptions({ filenameSuffix: e.target.value })}
                   placeholder="_fixed"
-                  className="w-16 bg-transparent text-text-secondary font-tech text-xs focus:outline-none px-1.5 text-center"
+                  className="w-20 bg-background border border-l-0 border-card-border text-white font-tech text-sm focus:outline-none focus:border-accent px-2 py-3"
                 />
-                <span className="text-text-secondary font-tech text-xs pr-2">.{exportOptions.format}</span>
+                <span className="bg-card-elevated text-text-secondary font-tech text-sm px-2.5 border border-l-0 border-card-border rounded-r-lg flex items-center self-stretch">.{exportOptions.format}</span>
               </div>
             </div>
 

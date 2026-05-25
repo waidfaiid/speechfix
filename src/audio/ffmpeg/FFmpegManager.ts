@@ -9,7 +9,7 @@ class FFmpegManager {
   private loaded = false
   private onProgress: ProgressCallback | null = null
 
-  setProgressCallback(fn: ProgressCallback) { this.onProgress = fn }
+  setProgressCallback(fn: ProgressCallback | null) { this.onProgress = fn }
 
   async load(): Promise<void> {
     if (this.loaded || this.loading) return

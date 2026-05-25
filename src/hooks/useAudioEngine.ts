@@ -42,18 +42,18 @@ async function refreshPreviewGainStaging(): Promise<void> {
   const gen = ++previewGainGeneration
   const state = useProcessingStore.getState()
   const params = state.getParams()
-  const { makeupDb, gainDb, postCompTrimDb } = await computeExportGainStaging(
+  const { makeupDb, gainDb, postCompTrimDb, bypassGainDb } = await computeExportGainStaging(
     cachedBuffer,
     cachedInputGainDb,
     params,
     state.limiterTarget,
   )
   if (gen !== previewGainGeneration) return
-  audioEngine.setExportGainStaging(makeupDb, gainDb, postCompTrimDb)
+  audioEngine.setExportGainStaging(makeupDb, gainDb, postCompTrimDb, bypassGainDb)
 }
 
 export function useAudioEngine() {
-  const { setIsPlaying, setCurrentTime, setDuration, setIsLoading, setAnalysis, setTrimStart, setTrimEnd } = useAudioStore()
+  const { setIsPlaying, setCurrentTime, setDuration, setIsLoading, setIsChunkLoading, setAnalysis, setTrimStart, setTrimEnd } = useAudioStore()
   const activeFile = useFileStore((s) => s.getActiveFile())
   const updateFile = useFileStore((s) => s.updateFile)
   const initialized = useRef(false)
@@ -64,16 +64,14 @@ export function useAudioEngine() {
     audioEngine.setOnTimeUpdate(setCurrentTime)
     audioEngine.setOnEnd(() => {
       setIsPlaying(false)
-      // Reset to trimStart so playback restarts from the trim region
       const { trimStart } = useAudioStore.getState()
       setCurrentTime(trimStart)
     })
-    // Only limiter intervention comes from real-time metering now.
-    // Dynamics are computed offline for track-wide accuracy.
     audioEngine.setOnMetering((m) => {
       useProcessingStore.getState().setLimiterInterventionDb(m.limiterInterventionDb)
     })
-  }, [setCurrentTime, setIsPlaying])
+    audioEngine.setOnChunkLoading(setIsChunkLoading)
+  }, [setCurrentTime, setIsPlaying, setIsChunkLoading])
 
   // Sync processing params to the audio engine whenever the store changes.
   useEffect(() => {
@@ -213,16 +211,18 @@ export function useAudioEngine() {
       const pinkLinear = audioEngine.getPinkNoiseMixLinear()
       useProcessingStore.getState().setPinkNoiseMixLinear(pinkLinear)
 
-      // Quick metadata (no heavy computation yet)
-      setDuration(buffer.duration)
+      // In chunked mode, totalDuration comes from the waveform peaks (full file).
+      // In normal mode it's just buffer.duration.
+      const fileDuration = audioEngine.totalDuration
+      setDuration(fileDuration)
       const sr = buffer.sampleRate
       const sampleRate: SampleRate = sr >= 48000 ? 48000 : 44100
-      updateFile(activeFile.id, { duration: buffer.duration, originalSampleRate: sr })
+      updateFile(activeFile.id, { duration: fileDuration, originalSampleRate: sr })
 
       const baseName = activeFile.name.replace(/\.[^.]+$/, '')
       const ext = activeFile.name.split('.').pop()?.toLowerCase() ?? ''
       const format: ExportFormat = FORMAT_MAP[ext] ?? 'mp3'
-      const ceiling = getQualityCeiling(activeFile.name, activeFile.file.size, buffer.duration)
+      const ceiling = getQualityCeiling(activeFile.name, activeFile.file.size, fileDuration)
       const currentQuality = useProcessingStore.getState().exportOptions.quality
       const quality: ExportQuality =
         QUALITY_ORDER.indexOf(currentQuality) > QUALITY_ORDER.indexOf(ceiling)

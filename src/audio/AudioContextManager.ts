@@ -1,4 +1,4 @@
-import { IOS_PREVIEW_SAMPLE_RATE, isIOS } from '@/utils/mobileAudio'
+import { AUDIO_CONTEXT_SAMPLE_RATE } from '@/utils/mobileAudio'
 
 type StateListener = (state: AudioContextState) => void
 
@@ -43,8 +43,7 @@ class AudioContextManager {
 
     const AudioCtx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
 
-    // iOS preview runs at 16 kHz — export still uses FFmpeg at full quality.
-    const sampleRate = isIOS() ? IOS_PREVIEW_SAMPLE_RATE : 48_000
+    const sampleRate = AUDIO_CONTEXT_SAMPLE_RATE
 
     this.ctx = new AudioCtx({ sampleRate, latencyHint: 'interactive' })
 

@@ -64,7 +64,7 @@ export function EQProPanel() {
     <Dialog.Root open={showEQPro} onOpenChange={setShowEQPro}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/70 z-50 animate-fade-in" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 bg-card border border-card-border rounded-2xl max-h-[85vh] w-full max-w-2xl overflow-y-auto animate-fade-in">
+        <Dialog.Content className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 bg-card border border-card-border rounded-2xl max-h-[85vh] w-[calc(100vw-1rem)] max-w-2xl overflow-y-auto animate-fade-in">
           <div className="sticky top-0 bg-card border-b border-card-border px-4 py-3 flex items-center justify-between">
             <Dialog.Title className="text-text-primary font-semibold">Klang der Stimme / Equalizer</Dialog.Title>
             <div className="flex items-center gap-2">
@@ -113,15 +113,15 @@ export function EQProPanel() {
               {/* Freq axis labels */}
               <div className="flex justify-between px-2 pb-2">
                 {['20', '50', '100', '200', '500', '1k', '2k', '5k', '10k', '20k'].map((f) => (
-                  <span key={f} className="text-text-secondary text-xs">{f}</span>
+                  <span key={f} className="text-text-secondary text-[10px]">{f}</span>
                 ))}
               </div>
             </div>
 
             {/* Curve legend */}
             <div className="flex flex-wrap gap-x-4 gap-y-1 px-1">
-              <LegendItem color="#6366f1" label="EQ-Kurve (aktiv)" />
-              {measuredLTAS && <LegendItem color="#f59e0b" label="Deine Aufnahme" muted />}
+              <LegendItem color="#f59e0b" label="EQ-Kurve (aktiv)" />
+              {measuredLTAS && <LegendItem color="#fcd34d" label="Deine Aufnahme" muted />}
               <LegendItem color="#2dd4bf" label="Profi-Referenz" muted />
             </div>
 

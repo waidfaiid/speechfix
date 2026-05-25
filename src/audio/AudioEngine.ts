@@ -4,8 +4,14 @@ import { createTubeCurve, createTapeCurve, createAutoCurve, dbToLinear } from '@
 import { LUFSAnalyzer } from './analysis/LUFSAnalyzer'
 import { createPinkNoiseBuffer, measureRmsDbfs } from './analysis/pinkNoise'
 import { DYNAMICS_WORKING_LEVEL_LUFS } from './analysis/dynamicsMeter'
-import { decodeAudioFile } from './decodeAudioFile'
-import { LUFS_ANALYSIS_MAX_SEC } from '@/utils/mobileAudio'
+import { decodeAudioFile, decodeChunk, releaseFfmpegInput } from './decodeAudioFile'
+import { computeWaveformPeaks, type WaveformPeakData } from './WaveformPeaks'
+import {
+  LUFS_ANALYSIS_MAX_SEC,
+  CHUNK_DURATION_SEC,
+  CHUNK_PREFETCH_SEC,
+  needsChunkedPlayback,
+} from '@/utils/mobileAudio'
 
 /** Duration of the noise-gain crossfade ramp in seconds. */
 const NOISE_RAMP_S = 0.020   // 20 ms
@@ -116,6 +122,18 @@ export class AudioEngine {
   private rafId: number | null = null
   private meterRafId: number | null = null
 
+  // ── Chunked playback (iOS) ──────────────────────────────────────────────
+  private _chunkedMode = false
+  private _chunkFile: File | null = null
+  private _chunkStartSec = 0
+  private _chunkEndSec = 0
+  private _totalDuration = 0
+  private _isChunkLoading = false
+  private _chunkLoadPromise: Promise<void> | null = null
+  private _prefetchingChunk = false
+  private _waveformPeaks: WaveformPeakData | null = null
+  private onChunkLoadingChange: ((loading: boolean) => void) | null = null
+
   private sourceLUFS = -20
   private limiterInterventionDb = 0
   private readonly lufsAnalyzer = new LUFSAnalyzer()
@@ -126,31 +144,37 @@ export class AudioEngine {
   private _previewNormalizeDb = 0
   private _makeupDb = 0
   private _postCompTrimDb = 0
+  /** Bypass (Original) gain in dB — computed by computeExportGainStaging. */
+  private _bypassGainDb: number | null = null
 
   get isPlaying() { return this.playing }
   get loadedLUFS(): number { return this.sourceLUFS }
   get loadedBuffer(): AudioBuffer | null { return this.buffer }
+  get isChunkedMode(): boolean { return this._chunkedMode }
+  get waveformPeaks(): WaveformPeakData | null { return this._waveformPeaks }
+  get isChunkLoading(): boolean { return this._isChunkLoading }
+  get chunkStartSec(): number { return this._chunkStartSec }
+  get chunkEndSec(): number { return this._chunkEndSec }
   setOnFileLoaded(cb: ((buffer: AudioBuffer) => void) | null): void { this.onFileLoadedCb = cb }
+  setOnChunkLoading(cb: ((loading: boolean) => void) | null): void { this.onChunkLoadingChange = cb }
 
   setTrimStart(t: number): void { this.trimStart = t }
   setTrimEnd(t: number | null): void { this.trimEnd = t }
 
   get currentTime() {
     if (!this.ctx || !this.playing) return this.pausedAt
-    return this.pausedAt + (this.ctx.currentTime - this.startTime)
+    const elapsed = this.ctx.currentTime - this.startTime
+    return this.pausedAt + elapsed
   }
 
   async init(): Promise<void> {
     this.ctx = await audioContextManager.initOnUserGesture()
     this.buildGraph()
     this.startKeepAlive()
-    // RNNoise is hard-coded for 48 kHz (480-sample frames). Skip on iOS where
-    // we run the AudioContext at 22 050 Hz to stay within the memory budget.
-    if (this.ctx.sampleRate === 48000) {
-      this.initRnnoise().catch((err) => {
-        console.warn('[RNNoise] init failed; noise slider will have no effect in preview:', err)
-      })
-    }
+    // AudioContext now runs at 48 kHz on all platforms, so RNNoise always works.
+    this.initRnnoise().catch((err) => {
+      console.warn('[RNNoise] init failed; noise slider will have no effect in preview:', err)
+    })
   }
 
   private buildGraph(): void {
@@ -318,8 +342,8 @@ export class AudioEngine {
     // Wet path output: noiseWetGain → compressorStage1 (rnnoiseNode → noiseWetGain in initRnnoise)
     this.noiseWetGain.connect(this.compressorStage1!)
 
-    // Shared post-noise chain mirrors export: comp → trim → de-esser → exciter
-    // → makeup → gain → limiter
+    // Shared post-noise chain: comp → trim → de-esser → exciter
+    // → makeup → normalize → A/B switch → limiter → out
     this.connectChain([
       this.compressorStage1,
       this.compressorStage2,
@@ -329,15 +353,18 @@ export class AudioEngine {
       this.exciterDcBlock,
       this.makeupGain,
       this.previewNormalizeGain,
+      this.processedGain,
       this.limiterWorklet ?? this.limiterCompressor,
       this.limiterGain,
-      this.processedGain,
       this.masterOut,
     ])
 
-    // Static bypass chain (source end connected per-play; source changes each play)
+    // Bypass chain also routed through the shared limiter so the original
+    // signal is peak-limited identically to the processed one.
     this.bypassNormalizeGain.connect(this.bypassGain)
-    this.bypassGain.connect(this.masterOut)
+    const limiterNode = this.limiterWorklet ?? this.limiterCompressor
+    if (limiterNode) this.bypassGain.connect(limiterNode)
+    else this.bypassGain.connect(this.masterOut!)
 
     this.pinkNoiseGain.connect(this.masterOut)
     this.masterOut.connect(ctx.destination)
@@ -508,26 +535,82 @@ export class AudioEngine {
     }
     const ctx = this.ctx!
 
-    // iOS Safari: if AudioContext is still suspended after init() (e.g. because
-    // resume() failed outside a user-gesture context), try once more.  When the
-    // user taps the file-picker button we call audioEngine.init() synchronously
-    // in the click handler so the context should already be running here.
     if (ctx.state === 'suspended') {
       await ctx.resume().catch(() => {})
+    }
+
+    // Decide whether to use chunked playback (iOS large files).
+    const chunked = needsChunkedPlayback(file)
+    this._chunkedMode = chunked
+    this._chunkFile = chunked ? file : null
+    this._waveformPeaks = null
+    this._totalDuration = 0
+
+    if (chunked) {
+      return this._loadFileChunked(file, ctx)
     }
 
     const decoded = await decodeAudioFile(ctx, file, { sampleRate: ctx.sampleRate })
     this.buffer = decoded
     this.sourceLUFS = analyzeIntegratedLoudness(this.lufsAnalyzer, decoded)
+    this._resetGainState()
+
+    this._applyInputNormalize()
+    this._resetGainNodes()
+
+    this.pinkNoiseBuffer = createPinkNoiseBuffer(ctx)
+    const rmsDb = measureRmsDbfs(decoded)
+    this._pinkNoiseMixLinear = dbToLinear(rmsDb - 15)
+
+    this.onFileLoadedCb?.(decoded)
+    return decoded
+  }
+
+  /**
+   * Chunked loading: compute waveform peaks from the full file (low-rate),
+   * then decode only the first 90 s at 48 kHz for playback.
+   */
+  private async _loadFileChunked(file: File, ctx: AudioContext): Promise<AudioBuffer> {
+    this._setChunkLoading(true)
+
+    // Step 1: compute waveform peaks (low-rate decode + peak extraction)
+    const peaks = await computeWaveformPeaks(file)
+    this._waveformPeaks = peaks
+    this._totalDuration = peaks.duration
+
+    // Step 2: decode first chunk at 48 kHz
+    const chunkDur = Math.min(CHUNK_DURATION_SEC, peaks.duration)
+    const chunk = await decodeChunk(file, 0, chunkDur)
+    this.buffer = chunk
+    this._chunkStartSec = 0
+    this._chunkEndSec = chunk.duration
+
+    this.sourceLUFS = analyzeIntegratedLoudness(this.lufsAnalyzer, chunk)
+    this._resetGainState()
+
+    this._applyInputNormalize()
+    this._resetGainNodes()
+
+    this.pinkNoiseBuffer = createPinkNoiseBuffer(ctx)
+    const rmsDb = measureRmsDbfs(chunk)
+    this._pinkNoiseMixLinear = dbToLinear(rmsDb - 15)
+
+    this._setChunkLoading(false)
+    this.onFileLoadedCb?.(chunk)
+    return chunk
+  }
+
+  private _resetGainState(): void {
     this._previewNormalizeDb = 0
     this._makeupDb = 0
     this._postCompTrimDb = 0
+    this._bypassGainDb = null
     this.pausedAt = 0
     this.trimStart = 0
     this.trimEnd = null
+  }
 
-    // Immediately set input normalisation so EQ/compressors receive properly-levelled
-    // material before the first updateParams call.
+  private _applyInputNormalize(): void {
     if (this.inputNormalizeGain && this.ctx) {
       const inputGainDb = DYNAMICS_WORKING_LEVEL_LUFS - this.sourceLUFS
       this.inputNormalizeGain.gain.setValueAtTime(
@@ -535,20 +618,104 @@ export class AudioEngine {
         this.ctx.currentTime,
       )
     }
+  }
+
+  private _resetGainNodes(): void {
     if (this.ctx) {
       const now = this.ctx.currentTime
       this.postCompTrim?.gain.setValueAtTime(1, now)
       this.makeupGain?.gain.setValueAtTime(1, now)
       this._applyPreviewNormalize(now)
     }
+  }
 
-    this.pinkNoiseBuffer = createPinkNoiseBuffer(ctx)
-    const rmsDb = measureRmsDbfs(decoded)
-    const pinkLinear = dbToLinear(rmsDb - 15)
-    this._pinkNoiseMixLinear = pinkLinear
+  private _setChunkLoading(loading: boolean): void {
+    this._isChunkLoading = loading
+    this.onChunkLoadingChange?.(loading)
+  }
 
-    this.onFileLoadedCb?.(decoded)
-    return decoded
+  /**
+   * Ensure the chunk covering `timeSec` is loaded.
+   * Returns immediately if already covered; otherwise decodes a new chunk.
+   */
+  async ensureChunkAt(timeSec: number): Promise<void> {
+    if (!this._chunkedMode || !this._chunkFile) return
+    if (timeSec >= this._chunkStartSec && timeSec < this._chunkEndSec) return
+
+    if (this._chunkLoadPromise) {
+      await this._chunkLoadPromise
+      if (timeSec >= this._chunkStartSec && timeSec < this._chunkEndSec) return
+    }
+
+    this._chunkLoadPromise = this._loadChunkAt(timeSec)
+    await this._chunkLoadPromise
+    this._chunkLoadPromise = null
+  }
+
+  private async _loadChunkAt(timeSec: number): Promise<void> {
+    if (!this._chunkFile) return
+    const wasPlaying = this.playing
+    if (wasPlaying) this.pause()
+
+    this._setChunkLoading(true)
+
+    const start = Math.max(0, timeSec - 10)
+    const maxDur = this._totalDuration - start
+    const dur = Math.min(CHUNK_DURATION_SEC, maxDur)
+
+    const chunk = await decodeChunk(this._chunkFile, start, dur)
+    this.buffer = chunk
+    this._chunkStartSec = start
+    this._chunkEndSec = start + chunk.duration
+
+    this._setChunkLoading(false)
+
+    if (wasPlaying) {
+      this.play(timeSec)
+    }
+  }
+
+  /**
+   * Pre-fetch the next chunk in the background when approaching the boundary.
+   * Called from the RAF loop during playback.
+   */
+  private _maybePrefetchChunk(): void {
+    if (!this._chunkedMode || !this._chunkFile || this._prefetchingChunk) return
+    const t = this.currentTime
+    const remaining = this._chunkEndSec - t
+    if (remaining > CHUNK_PREFETCH_SEC || remaining < 0) return
+    if (this._chunkEndSec >= this._totalDuration) return
+
+    this._prefetchingChunk = true
+    const nextStart = Math.max(0, this._chunkEndSec - 5)
+    const maxDur = this._totalDuration - nextStart
+    const dur = Math.min(CHUNK_DURATION_SEC, maxDur)
+
+    decodeChunk(this._chunkFile, nextStart, dur)
+      .then((chunk) => {
+        this.buffer = chunk
+        this._chunkStartSec = nextStart
+        this._chunkEndSec = nextStart + chunk.duration
+
+        if (this.playing) {
+          const currentT = this.currentTime
+          if (this.source) this.source.onended = null
+          this.stop()
+          this.play(currentT)
+        }
+      })
+      .catch((err) => {
+        console.warn('[AudioEngine] chunk prefetch failed:', err)
+      })
+      .finally(() => {
+        this._prefetchingChunk = false
+      })
+  }
+
+  /** Total duration in chunked mode (from waveform peaks), or buffer duration. */
+  get totalDuration(): number {
+    if (this._chunkedMode) return this._totalDuration
+    return this.buffer?.duration ?? 0
   }
 
   private _pinkNoiseMixLinear = 0
@@ -566,8 +733,22 @@ export class AudioEngine {
 
     // Snap to trim region boundaries
     if (this.pausedAt < this.trimStart) this.pausedAt = this.trimStart
-    const effectiveEnd = this.trimEnd ?? this.buffer.duration
+    const effectiveDuration = this._chunkedMode ? this._totalDuration : this.buffer.duration
+    const effectiveEnd = this.trimEnd ?? effectiveDuration
     if (this.pausedAt >= effectiveEnd) this.pausedAt = this.trimStart
+
+    // In chunked mode, offset into the chunk buffer
+    const bufferOffset = this._chunkedMode
+      ? this.pausedAt - this._chunkStartSec
+      : this.pausedAt
+
+    if (bufferOffset < 0 || bufferOffset >= this.buffer.duration) {
+      // Position outside loaded chunk — need to load a new chunk first
+      if (this._chunkedMode) {
+        this.ensureChunkAt(this.pausedAt).then(() => { this.play() })
+        return
+      }
+    }
 
     this.source = ctx.createBufferSource()
     this.source.buffer = this.buffer
@@ -577,12 +758,16 @@ export class AudioEngine {
       this.source.connect(this.bypassNormalizeGain)
     }
 
-
     this.startPinkNoise()
 
-    this.source.start(0, this.pausedAt)
+    this.source.start(0, bufferOffset)
     this.source.onended = () => {
       if (this.playing) {
+        // In chunked mode, reaching the chunk end doesn't mean the file ended
+        if (this._chunkedMode && this.currentTime < effectiveDuration - 0.5) {
+          this.ensureChunkAt(this.currentTime).catch(() => {})
+          return
+        }
         this.playing = false
         this.pausedAt = this.trimStart
         this.stopPinkNoise()
@@ -632,13 +817,22 @@ export class AudioEngine {
 
   seek(time: number): void {
     const wasPlaying = this.playing
-    // Detach onended BEFORE stop() so the old source node's async ended-event
-    // cannot fire after the new source is already playing (which would set
-    // this.playing = false and call onEnd, breaking play/pause state).
     if (this.source) this.source.onended = null
     this.stop()
-    const effectiveEnd = this.trimEnd ?? (this.buffer?.duration ?? Infinity)
+    const effectiveDuration = this._chunkedMode ? this._totalDuration : (this.buffer?.duration ?? Infinity)
+    const effectiveEnd = this.trimEnd ?? effectiveDuration
     this.pausedAt = Math.max(this.trimStart, Math.min(effectiveEnd, time))
+
+    // In chunked mode, check if we need a new chunk
+    if (this._chunkedMode && (this.pausedAt < this._chunkStartSec || this.pausedAt >= this._chunkEndSec)) {
+      this.onTimeUpdate?.(this.pausedAt)
+      this.ensureChunkAt(this.pausedAt).then(() => {
+        if (wasPlaying) this.play()
+        else this.onTimeUpdate?.(this.pausedAt)
+      })
+      return
+    }
+
     if (wasPlaying) {
       this.play()
     } else {
@@ -785,10 +979,20 @@ export class AudioEngine {
       this._previewNormalizeDb += params.limiterTarget - prevTarget
     }
 
-    // Bypass path: no inputNormalizeGain — match limiterTarget directly from sourceLUFS.
+    // Bypass path gain: use calibrated value from computeExportGainStaging when
+    // available; otherwise approximate with the same ASC correction (−1.3 dB)
+    // that the processed path applies so A/B is loudness-matched from the start.
     if (this.bypassNormalizeGain) {
-      const gainDb = Math.max(-30, Math.min(30, params.limiterTarget - this.sourceLUFS))
-      this.bypassNormalizeGain.gain.setTargetAtTime(dbToLinear(gainDb), now, 0.08)
+      if (this._bypassGainDb !== null) {
+        if (params.limiterTarget !== prevTarget) {
+          this._bypassGainDb += params.limiterTarget - prevTarget
+        }
+        this._applyBypassGain(now)
+      } else {
+        const approxTarget = params.limiterTarget - 1.3
+        const gainDb = Math.max(-30, Math.min(30, approxTarget - this.sourceLUFS))
+        this.bypassNormalizeGain.gain.setTargetAtTime(dbToLinear(gainDb), now, 0.08)
+      }
     }
 
     this._applyPreviewNormalize(now)
@@ -816,8 +1020,9 @@ export class AudioEngine {
    *   postCompTrim (measured) cancels Chrome compressor auto-makeup
    *   makeupGain (+makeupDb) restores to postEq after exciter
    *   previewNormalize (+gainDb) brings postEq to limiterTarget
+   *   bypassGainDb — loudness-matched gain for the Original A/B path
    */
-  setExportGainStaging(makeupDb: number, gainDb: number, postCompTrimDb?: number): void {
+  setExportGainStaging(makeupDb: number, gainDb: number, postCompTrimDb?: number, bypassGainDb?: number): void {
     if (!this.ctx || !this.postCompTrim || !this.makeupGain) return
     this._makeupDb = makeupDb
     this._previewNormalizeDb = gainDb
@@ -830,6 +1035,11 @@ export class AudioEngine {
       this.makeupGain.gain.setTargetAtTime(dbToLinear(makeupDb), now, 0.1)
     }
     this._applyPreviewNormalize(now)
+
+    if (bypassGainDb !== undefined) {
+      this._bypassGainDb = bypassGainDb
+      this._applyBypassGain(now)
+    }
   }
 
   /** @deprecated Use setExportGainStaging — kept for dynamics UI hook. */
@@ -845,6 +1055,13 @@ export class AudioEngine {
     if (!this.previewNormalizeGain) return
     const gainDb = Math.max(-30, Math.min(30, this._previewNormalizeDb))
     this.previewNormalizeGain.gain.setTargetAtTime(dbToLinear(gainDb), now, 0.08)
+  }
+
+  /** Applies the offline-computed bypass gain (loudness-matched to processed). */
+  private _applyBypassGain(now: number): void {
+    if (!this.bypassNormalizeGain || this._bypassGainDb === null) return
+    const gainDb = Math.max(-30, Math.min(30, this._bypassGainDb))
+    this.bypassNormalizeGain.gain.setTargetAtTime(dbToLinear(gainDb), now, 0.08)
   }
 
   private _updateWorkletDeEsser(params: ProcessingParams, now: number): void {
@@ -903,6 +1120,8 @@ export class AudioEngine {
         this.onEnd?.()
         return
       }
+      // Pre-fetch next chunk when approaching boundary
+      if (this._chunkedMode) this._maybePrefetchChunk()
       this.onTimeUpdate?.(t)
       this.rafId = requestAnimationFrame(tick)
     }
@@ -921,6 +1140,7 @@ export class AudioEngine {
     this.stop()
     this.keepAliveOsc?.stop()
     this.ctx?.close()
+    if (this._chunkedMode) releaseFfmpegInput()
   }
 }
 
