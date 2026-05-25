@@ -66,6 +66,7 @@ interface ProcessingStore extends ProcessingParams {
   setDesibilanceEnabled: (v: boolean) => void
   setDesibilanceAmount: (v: number) => void
   setDesibilanceFreq: (v: number) => void
+  setLimiterEnabled: (v: boolean) => void
   setLimiterTarget: (v: number) => void
   setContentType: (v: ContentType) => void
   setExportOptions: (opts: Partial<ExportOptions>) => void
@@ -109,6 +110,7 @@ export const useProcessingStore = create<ProcessingStore>((set, get) => ({
   desibilanceEnabled: false,
   desibilanceAmount: 0,
   desibilanceFreq: 7000,
+  limiterEnabled: true,
   limiterTarget: -16,
   contentType: 'speech' as ContentType,
 
@@ -184,6 +186,7 @@ export const useProcessingStore = create<ProcessingStore>((set, get) => ({
   setDesibilanceEnabled: (v) => set({ desibilanceEnabled: v }),
   setDesibilanceAmount: (v) => set({ desibilanceAmount: v }),
   setDesibilanceFreq: (v) => set({ desibilanceFreq: v }),
+  setLimiterEnabled: (v) => set({ limiterEnabled: v }),
   setLimiterTarget: (v) => set({ limiterTarget: v }),
   setContentType: (v) => {
     const referenceLTAS = v === 'mixed' ? FLAT_REFERENCE_LTAS : SPEECH_REFERENCE_LTAS
@@ -228,6 +231,7 @@ export const useProcessingStore = create<ProcessingStore>((set, get) => ({
       desibilanceEnabled: s.desibilanceEnabled,
       desibilanceAmount: s.desibilanceAmount,
       desibilanceFreq: s.desibilanceFreq,
+      limiterEnabled: s.limiterEnabled,
       limiterTarget: s.limiterTarget,
       contentType: s.contentType,
     }

@@ -132,7 +132,7 @@ function drawLTASCurvePair(
   }
 
   drawOne(refNorm,  '#2dd4bf', 0.45)
-  drawOne(measNorm, '#f59e0b', 0.55)
+  drawOne(measNorm, '#fcd34d', 0.55)
 }
 
 export function EQGraph({
@@ -213,7 +213,7 @@ export function EQGraph({
     // --- EQ filter response ---
     const response = computeFreqResponse(bands)
     ctx.beginPath()
-    ctx.strokeStyle = '#6366f1'
+    ctx.strokeStyle = '#f59e0b'
     ctx.lineWidth = 2.5
     for (let i = 0; i < response.length; i++) {
       const freq = MIN_FREQ * Math.pow(MAX_FREQ / MIN_FREQ, i / response.length)
@@ -243,7 +243,7 @@ export function EQGraph({
       } else {
         ctx.arc(x, y, r, 0, Math.PI * 2)
       }
-      ctx.fillStyle = band.enabled ? (isSelected ? '#6366f1' : '#818cf8') : '#374151'
+      ctx.fillStyle = band.enabled ? (isSelected ? '#f59e0b' : 'rgba(245,158,11,0.5)') : '#374151'
       ctx.fill()
       if (isSelected) {
         ctx.strokeStyle = '#ffffff'

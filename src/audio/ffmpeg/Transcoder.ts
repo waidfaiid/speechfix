@@ -4,6 +4,7 @@ import type { ProcessingParams, ExportOptions } from '@/types/processing.types'
 import type { BiquadFilterType } from '@/types/audio.types'
 import { applySpectralSubtraction } from '../analysis/HumAnalyzer'
 import { DYNAMICS_WORKING_LEVEL_LUFS } from '../analysis/dynamicsMeter'
+import { isIOS, AUDIO_CONTEXT_SAMPLE_RATE } from '@/utils/mobileAudio'
 
 const QUALITY_BITRATE: Record<string, Record<string, string>> = {
   mp3:  { low: '96k',  medium: '192k', high: '320k',  lossless: '320k' },
@@ -682,14 +683,12 @@ function parseLUFS(logs: string[]): number | null {
 }
 
 /**
- * Pass 1: measure the integrated LUFS of the source signal. The realtime
- * WebAudio preview computes its pre-limiter target gain from the decoded source
- * loudness. Using the same source reference here keeps the export limiter driven
- * like the preview while still letting every processing edit change the signal
- * that reaches the limiter.
+ * Measure the integrated LUFS after applying a filter chain.
+ * Supports optional -ss/-to args for trimmed measurement.
  */
-async function measureFilteredLUFS(inputName: string, afChain: string): Promise<number | null> {
+async function measureFilteredLUFSWithTrim(inputName: string, afChain: string, trimArgs: string[] = []): Promise<number | null> {
   const logs = await ffmpegManager.execCaptureLogs([
+    ...trimArgs,
     '-i', inputName,
     '-af', afChain,
     '-f', 'null', '-',
@@ -697,8 +696,12 @@ async function measureFilteredLUFS(inputName: string, afChain: string): Promise<
   return parseLUFS(logs)
 }
 
-async function measureSourceLUFS(inputName: string): Promise<number> {
+/**
+ * Measure the integrated LUFS of the source file with optional trim.
+ */
+async function measureSourceLUFSWithTrim(inputName: string, trimArgs: string[] = []): Promise<number> {
   const logs = await ffmpegManager.execCaptureLogs([
+    ...trimArgs,
     '-i', inputName,
     '-af', `aresample=${PREVIEW_SAMPLE_RATE},ebur128=peak=true`,
     '-f', 'null', '-',
@@ -707,13 +710,12 @@ async function measureSourceLUFS(inputName: string): Promise<number> {
   const lufs = parseLUFS(logs)
   if (lufs !== null) return lufs
 
-  // Fallback: use volumedetect RMS (less accurate but always available).
   for (let i = logs.length - 1; i >= 0; i--) {
     const m = logs[i].match(/mean_volume:\s*(-?\d+\.?\d*)/)
-    if (m) return parseFloat(m[1]) + 3   // rough LUFS ≈ RMS + 3 dB for speech
+    if (m) return parseFloat(m[1]) + 3
   }
 
-  return -20 // safe fallback
+  return -20
 }
 
 // ---------------------------------------------------------------------------
@@ -751,6 +753,154 @@ async function applySpectralSubtractionToBuffer(
 // ---------------------------------------------------------------------------
 
 /**
+ * Structured progress reporting for granular UI feedback.
+ * Each step gets a label and proportional weight so the progress bar moves
+ * smoothly and predictably.
+ */
+interface ExportStep {
+  label: string
+  weight: number
+}
+
+function buildExportSteps(params: ProcessingParams, needsJsPrePass: boolean, preFiltersApplied: boolean): ExportStep[] {
+  const steps: ExportStep[] = []
+
+  if (needsJsPrePass) {
+    steps.push({ label: 'Audio dekodieren & trimmen…', weight: 5 })
+    if (params.humEnabled || params.eqEnabled) {
+      steps.push({ label: 'Hum/EQ offline anwenden…', weight: 8 })
+    }
+    if (params.humEnabled && params.humAutoMode && params.humDetectedFreqs.length > 0) {
+      steps.push({ label: 'Spektrale Subtraktion…', weight: 10 })
+    }
+    if (params.noiseEnabled && params.noiseAmount > 0) {
+      steps.push({ label: 'Rauschunterdrückung (RNNoise)…', weight: 25 })
+    }
+    steps.push({ label: 'Denoised Audio schreiben…', weight: 3 })
+  } else {
+    steps.push({ label: 'Audio vorbereiten…', weight: 3 })
+  }
+
+  steps.push({ label: 'Lautheit messen…', weight: 15 })
+
+  const needsCompression = params.compressionEnabled && params.compressionAmount > 0
+  const needsDeEsser = params.desibilanceEnabled && params.desibilanceAmount > 0
+  if (needsCompression || needsDeEsser) {
+    steps.push({ label: 'Dynamik analysieren…', weight: 15 })
+  }
+
+  steps.push({ label: 'Exportieren & Limiter…', weight: 50 })
+  steps.push({ label: 'Wird abgeschlossen…', weight: 2 })
+
+  return steps
+}
+
+class StepProgressReporter {
+  private steps: ExportStep[]
+  private totalWeight: number
+  private completedWeight = 0
+  private currentStepIdx = 0
+  private onProgress: (p: number) => void
+
+  constructor(steps: ExportStep[], onProgress: (p: number) => void) {
+    this.steps = steps
+    this.totalWeight = steps.reduce((sum, s) => sum + s.weight, 0)
+    this.onProgress = onProgress
+  }
+
+  get currentLabel(): string {
+    return this.steps[this.currentStepIdx]?.label ?? 'Wird verarbeitet…'
+  }
+
+  /** Report intra-step progress (0–1) */
+  reportSubProgress(fraction: number): void {
+    const step = this.steps[this.currentStepIdx]
+    if (!step) return
+    const pct = ((this.completedWeight + step.weight * Math.min(1, fraction)) / this.totalWeight) * 100
+    this.onProgress(Math.round(Math.min(99, pct)))
+  }
+
+  /** Mark the current step as done and advance to the next. */
+  completeStep(): void {
+    const step = this.steps[this.currentStepIdx]
+    if (step) this.completedWeight += step.weight
+    this.currentStepIdx++
+    const pct = (this.completedWeight / this.totalWeight) * 100
+    this.onProgress(Math.round(Math.min(99, pct)))
+  }
+
+  finish(): void {
+    this.onProgress(100)
+  }
+}
+
+/**
+ * Decode a file via FFmpeg at the given sample rate, returning a mono AudioBuffer.
+ * Used for the export pre-pass on iOS where ctx.decodeAudioData can OOM on large files.
+ */
+async function decodeViaFfmpegForExport(file: File, sampleRate: number): Promise<AudioBuffer> {
+  const stamp = Date.now()
+  const ext = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : 'mp3'
+  const inputName = `exp_dec_in_${stamp}.${ext}`
+  const outputName = `exp_dec_out_${stamp}.f32le`
+
+  try {
+    await ffmpegManager.writeFile(inputName, file)
+    await ffmpegManager.exec([
+      '-i', inputName,
+      '-ac', '1',
+      '-ar', String(sampleRate),
+      '-f', 'f32le',
+      outputName,
+    ])
+
+    const raw = await ffmpegManager.readFile(outputName)
+    const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
+    const sampleCount = Math.floor(bytes.byteLength / 4)
+
+    const offCtx = new OfflineAudioContext(1, Math.max(1, sampleCount), sampleRate)
+    const buffer = offCtx.createBuffer(1, sampleCount, sampleRate)
+    const channel = buffer.getChannelData(0)
+    const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 4)
+    const blockSize = 65_536
+    for (let off = 0; off < sampleCount; off += blockSize) {
+      const end = Math.min(sampleCount, off + blockSize)
+      for (let i = off; i < end; i++) {
+        channel[i] = view.getFloat32(i * 4, true)
+      }
+    }
+    return buffer
+  } finally {
+    await ffmpegManager.deleteFile(inputName)
+    await ffmpegManager.deleteFile(outputName)
+  }
+}
+
+/**
+ * Trim an AudioBuffer to a sub-region [startSec, endSec].
+ * Returns the original buffer if no trimming is needed.
+ */
+function trimAudioBuffer(buffer: AudioBuffer, startSec: number, endSec: number | undefined): AudioBuffer {
+  const sr = buffer.sampleRate
+  const startSample = Math.max(0, Math.round(startSec * sr))
+  const endSample = endSec != null ? Math.min(buffer.length, Math.round(endSec * sr)) : buffer.length
+  if (startSample === 0 && endSample >= buffer.length) return buffer
+
+  const trimmedLength = endSample - startSample
+  if (trimmedLength <= 0) return buffer
+
+  const offCtx = new OfflineAudioContext(buffer.numberOfChannels, trimmedLength, sr)
+  const out = offCtx.createBuffer(buffer.numberOfChannels, trimmedLength, sr)
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    out.copyToChannel(
+      buffer.getChannelData(ch).subarray(startSample, endSample) as Float32Array<ArrayBuffer>,
+      ch,
+    )
+  }
+  return out
+}
+
+/**
  * Two-pass export:
  *
  * 1. Measure integrated LUFS of the source signal (no file written), matching
@@ -776,48 +926,75 @@ export async function exportFile(
   const ext = file.name.split('.').pop() ?? 'wav'
   const outputName = `output_${stamp}.${options.format}`
 
-  // ---- JS-side pre-processing (RNNoise + optional spectral subtraction) ------
-  // When noise reduction or spectral subtraction is active we decode the file,
-  // run the relevant JS passes, write a 32-bit float WAV to the FFmpeg VFS and
-  // set preFiltersApplied so the FFmpeg chain does not re-apply hum/EQ.
-  let inputName: string
-  let denoisedInputName: string | null = null
-  // True when hum + EQ have been baked into the WAV fed to FFmpeg so the
-  // FFmpeg filter chain must not apply them a second time.
-  let preFiltersApplied = false
-
-  // Spectral subtraction runs automatically whenever a noise profile is active
+  // --- Determine which processing modules are actually active ---
+  const needsCompression = params.compressionEnabled && params.compressionAmount > 0
+  const needsDeEsser = params.desibilanceEnabled && params.desibilanceAmount > 0
+  const needsExciter = params.exciterEnabled && params.exciterAmount > 0
   const needsSpectralSub =
     params.humEnabled &&
     params.humAutoMode &&
     params.humDetectedFreqs.length > 0 &&
     humNoiseProfile !== null
+  const needsRnnoise = params.noiseEnabled && params.noiseAmount > 0
+  const needsJsPrePass = needsRnnoise || needsSpectralSub
 
-  const needsJsPrePass = (params.noiseEnabled && params.noiseAmount > 0) || needsSpectralSub
+  // Trimming: apply early so all processing only touches the exported region
+  const hasTrim = (options.trimStart != null && options.trimStart > 0) ||
+    (options.trimEnd != null && options.trimEnd > 0)
+
+  // --- Build structured progress steps ---
+  const steps = buildExportSteps(params, needsJsPrePass, false)
+  const noopReport = { reportSubProgress: () => {}, completeStep: () => {}, finish: () => {}, get currentLabel() { return '' } }
+  const reporter = onProgress
+    ? new StepProgressReporter(steps, onProgress)
+    : noopReport as unknown as StepProgressReporter
+
+  // ---- JS-side pre-processing (RNNoise + optional spectral subtraction) ------
+  let inputName: string
+  let denoisedInputName: string | null = null
+  let preFiltersApplied = false
 
   if (needsJsPrePass) {
-    onProgress?.(3)
+    reporter.reportSubProgress(0)
     const ctx = audioContextManager.context
     if (ctx) {
       try {
-        const rawArrayBuffer = await file.arrayBuffer()
-        const decoded = await ctx.decodeAudioData(rawArrayBuffer)
+        // On iOS, use FFmpeg to decode at 48 kHz to avoid Safari OOM from
+        // decodeAudioData on large files while ensuring RNNoise gets 48 kHz input.
+        let decoded: AudioBuffer
+        if (isIOS()) {
+          decoded = await decodeViaFfmpegForExport(file, AUDIO_CONTEXT_SAMPLE_RATE)
+        } else {
+          const rawArrayBuffer = await file.arrayBuffer()
+          decoded = await ctx.decodeAudioData(rawArrayBuffer)
+        }
 
-        // Apply hum notch filters + EQ offline before RNNoise / spectral subtraction.
-        // RNNoise was trained on balanced speech — it produces artefacts
-        // when fed audio with an abnormal frequency response.
-        let processed = await applyPreFiltersOffline(decoded, params)
+        // Trim EARLY so RNNoise only processes the exported region
+        if (hasTrim) {
+          decoded = trimAudioBuffer(decoded, options.trimStart ?? 0, options.trimEnd)
+        }
+        reporter.completeStep() // "Audio dekodieren & trimmen"
 
-        // Phase 4: Spectral subtraction — removes residual broadband hum
-        // between the notch-filtered peaks using the captured noise profile.
+        // Apply hum notch filters + EQ offline before RNNoise
+        let processed: AudioBuffer
+        if (params.humEnabled || params.eqEnabled) {
+          processed = await applyPreFiltersOffline(decoded, params)
+          reporter.completeStep() // "Hum/EQ offline anwenden"
+        } else {
+          processed = decoded
+        }
+
+        // Spectral subtraction
         if (needsSpectralSub && humNoiseProfile) {
           const alpha = params.humSubtractionAlpha
           processed = await applySpectralSubtractionToBuffer(processed, humNoiseProfile, alpha)
+          reporter.completeStep() // "Spektrale Subtraktion"
         }
 
         // RNNoise neural denoising (if enabled)
-        if (params.noiseEnabled && params.noiseAmount > 0) {
+        if (needsRnnoise) {
           processed = await applyRnnoiseDenoising(processed, params.noiseAmount, params.noiseLatencyMs)
+          reporter.completeStep() // "Rauschunterdrückung"
         }
 
         const wavBytes = audioBufferToWavBytes(processed)
@@ -825,140 +1002,140 @@ export async function exportFile(
         await ffmpegManager.writeFile(denoisedInputName, wavBytes)
         inputName = denoisedInputName
         preFiltersApplied = true
+        reporter.completeStep() // "Denoised Audio schreiben"
       } catch (err) {
         console.warn('[Export pre-pass] processing failed, falling back to original audio:', err)
         inputName = `input_${stamp}.${ext}`
         await ffmpegManager.writeFile(inputName, file)
+        reporter.completeStep() // consume remaining pre-pass steps
       }
     } else {
       inputName = `input_${stamp}.${ext}`
       await ffmpegManager.writeFile(inputName, file)
+      reporter.completeStep()
     }
   } else {
+    // No JS pre-pass needed — just write the file
     inputName = `input_${stamp}.${ext}`
     await ffmpegManager.writeFile(inputName, file)
+    reporter.completeStep() // "Audio vorbereiten"
   }
 
   // --- Pass 1: measure loudness references for makeup + target LUFS ---
-  onProgress?.(5)
-  const measuredLUFS = await measureSourceLUFS(inputName)
+  // When trim is active and we did NOT do a JS pre-pass, we trim the input
+  // file for measurement via FFmpeg's -ss/-to so measurements reflect the
+  // actual exported region. When JS pre-pass ran, the buffer is already trimmed.
+  const measureTrimArgs: string[] = []
+  if (hasTrim && !preFiltersApplied) {
+    if (options.trimStart && options.trimStart > 0) measureTrimArgs.push('-ss', options.trimStart.toFixed(3))
+    if (options.trimEnd && options.trimEnd > 0) measureTrimArgs.push('-to', options.trimEnd.toFixed(3))
+  }
 
-  // When a JS pre-pass applied noise reduction, the denoised audio has a
-  // lower integrated LUFS (the noise floor is gone).  If we derive the
-  // final volume normalisation from the denoised LUFS, FFmpeg applies a
-  // larger gain boost and the speech ends up several dB louder than the
-  // original export.  Instead we measure the original file's LUFS and use
-  // it as the normalization reference so speech level is identical
-  // regardless of whether noise reduction is active.
+  const measuredLUFS = await measureSourceLUFSWithTrim(inputName, measureTrimArgs)
+
+  // When JS pre-pass was used, the denoised audio is quieter. Use original
+  // file's LUFS as the normalisation reference so speech level stays consistent.
   let normRefLUFS = measuredLUFS
   if (preFiltersApplied && denoisedInputName) {
     const origRefName = `input_lufsref_${stamp}.${ext}`
     await ffmpegManager.writeFile(origRefName, file)
-    const origLUFS = await measureSourceLUFS(origRefName)
-    normRefLUFS = origLUFS
+    const origMeasureTrim: string[] = []
+    if (hasTrim) {
+      if (options.trimStart && options.trimStart > 0) origMeasureTrim.push('-ss', options.trimStart.toFixed(3))
+      if (options.trimEnd && options.trimEnd > 0) origMeasureTrim.push('-to', options.trimEnd.toFixed(3))
+    }
+    normRefLUFS = await measureSourceLUFSWithTrim(origRefName, origMeasureTrim)
+    await ffmpegManager.deleteFile(origRefName)
   }
 
-  // Normalize the input to DYNAMICS_WORKING_LEVEL_LUFS before processing so
-  // that the compressor and exciter receive the same signal level as in the
-  // Web Audio preview chain (which also normalises to this working level via
-  // inputNormalizeGain).  Without this, a loud source (+7 dB above working
-  // level) would drive the exciter harder in the export than in the preview,
-  // causing audibly different saturation character.
+  reporter.completeStep() // "Lautheit messen"
+
+  // Normalize input to working level (matches preview's inputNormalizeGain)
   const inputNormDb = DYNAMICS_WORKING_LEVEL_LUFS - normRefLUFS
   const normVol = Math.abs(inputNormDb) > 0.05
     ? `volume=${inputNormDb.toFixed(3)}dB`
     : null
 
   const preFilters = buildPreDeEsserFilters(params, preFiltersApplied)
-  // Prepend input normalisation so all measurements and the export chain
-  // operate at the same working level as the preview.
   const normPreFilters = normVol ? [normVol, ...preFilters] : preFilters
   const preChain = normPreFilters.join(',') || `aresample=${PREVIEW_SAMPLE_RATE}`
-  const postEqLUFS = (await measureFilteredLUFS(inputName, `${preChain},ebur128=peak=true`)) ?? measuredLUFS
 
-  // Pass 1: measure LUFS after compression but WITHOUT the exciter.
-  // The exciter heavily compresses peaks (up to −10 dB at 100 %), which
-  // would make processedLUFS fall sharply, triggering a large positive
-  // makeupDb that then undoes the exciter's character in Pass 2.
-  // Excluding the exciter here means the gain compensation only accounts
-  // for compression; the exciter's sonic character is preserved intact.
-  let processedLUFS = postEqLUFS
-  if (params.desibilanceEnabled && params.desibilanceAmount > 0) {
-    const fc = buildDeEsserFilterComplex(
-      normPreFilters,   // includes input normalisation
-      [],               // postFilters excluded from measurement
-      'ebur128=peak=true',
-      params,
-      false,
-    )
-    const logs = await ffmpegManager.execCaptureLogs([
-      '-i', inputName,
-      '-filter_complex', fc,
-      '-map', '[out]',
-      '-f', 'null', '-',
-    ])
-    processedLUFS = parseLUFS(logs) ?? postEqLUFS
+  // Measure postEQ LUFS — only if hum/EQ are applied via FFmpeg (not pre-baked)
+  let postEqLUFS: number
+  if (!preFiltersApplied && (params.humEnabled || params.eqEnabled)) {
+    postEqLUFS = (await measureFilteredLUFSWithTrim(inputName, `${preChain},ebur128=peak=true`, measureTrimArgs)) ?? measuredLUFS
   } else {
-    const chain = [
-      ...normPreFilters,
-      ...buildCompressionFilters(params),
-      // exciter deliberately excluded — see comment above
-      'ebur128=peak=true',
-    ].filter(Boolean).join(',')
-    processedLUFS = (await measureFilteredLUFS(inputName, chain)) ?? postEqLUFS
+    postEqLUFS = measuredLUFS
+  }
+
+  // Measure processedLUFS ONLY when compression or de-esser are active
+  // (these are the only modules that change integrated loudness significantly).
+  let processedLUFS = postEqLUFS
+  if (needsCompression || needsDeEsser) {
+    if (needsDeEsser) {
+      const fc = buildDeEsserFilterComplex(
+        normPreFilters,
+        [],
+        'ebur128=peak=true',
+        params,
+        false,
+      )
+      const logs = await ffmpegManager.execCaptureLogs([
+        ...measureTrimArgs,
+        '-i', inputName,
+        '-filter_complex', fc,
+        '-map', '[out]',
+        '-f', 'null', '-',
+      ])
+      processedLUFS = parseLUFS(logs) ?? postEqLUFS
+    } else {
+      const chain = [
+        ...normPreFilters,
+        ...buildCompressionFilters(params),
+        'ebur128=peak=true',
+      ].filter(Boolean).join(',')
+      processedLUFS = (await measureFilteredLUFSWithTrim(inputName, chain, measureTrimArgs)) ?? postEqLUFS
+    }
+    reporter.completeStep() // "Dynamik analysieren"
   }
 
   const makeupDb = Math.max(-12, Math.min(12, postEqLUFS - processedLUFS))
-  onProgress?.(30)
-
   const targetLUFS = params.limiterTarget
-
-  // After makeupDb is applied the signal is back at postEqLUFS.
-  // gainDb then lifts it from postEqLUFS to targetLUFS — no makeupDb subtraction.
-  // (Old formula subtracted makeupDb a second time, making the export
-  //  as many dB too quiet as the compression gain-reduction, ~6–10 dB.)
   const gainDb = Math.max(-30, Math.min(30, targetLUFS - postEqLUFS))
 
   const limitLinear = Math.pow(10, -1 / 20).toFixed(6)
   const normAndLimit = [
     makeupDb !== 0 ? `volume=${makeupDb.toFixed(2)}dB` : null,
     `volume=${gainDb.toFixed(2)}dB`,
-    `alimiter=level_in=1:level_out=1:limit=${limitLinear}:attack=5:release=50:asc=1`,
+    params.limiterEnabled
+      ? `alimiter=level_in=1:level_out=1:limit=${limitLinear}:attack=5:release=50:asc=1`
+      : null,
   ].filter(Boolean).join(',')
 
   // --- Pass 2: export ---
   ffmpegManager.setProgressCallback((p) => {
-    // Map FFmpeg's 0–100 onto the 30–100 range (pass 1 took 0–30).
-    onProgress?.(30 + Math.round(p * 0.7))
+    reporter.reportSubProgress(p / 100)
   })
 
-  // Trim: -ss / -to placed before -i for lossless input seeking (frame-accurate for audio)
-  const trimArgs: string[] = []
-  if (options.trimStart && options.trimStart > 0) {
-    trimArgs.push('-ss', options.trimStart.toFixed(3))
-  }
-  if (options.trimEnd && options.trimEnd > 0) {
-    trimArgs.push('-to', options.trimEnd.toFixed(3))
-  }
+  // When JS pre-pass already trimmed the buffer, don't trim again in FFmpeg.
+  // When no pre-pass, apply trim args to the final encode.
+  const encodeTrimArgs: string[] = (hasTrim && !preFiltersApplied) ? measureTrimArgs : []
 
   const args = [
-    ...trimArgs,
+    ...encodeTrimArgs,
     '-i', inputName,
     '-ar', String(options.sampleRate),
     '-ac', String(options.channels),
   ]
 
-  if (params.desibilanceEnabled && params.desibilanceAmount > 0) {
-    // Dynamic de-esser: build a filter_complex that applies the sidechaincompress
-    // de-esser before the normalization + limiter.
-    // normPreFilters already includes the input-level normalisation volume filter.
-    const postFilters = buildPostDeEsserFilters(params)
-    const fc = buildDeEsserFilterComplex(normPreFilters, postFilters, normAndLimit, params, false)
+  if (needsDeEsser) {
+    const postFilters = needsExciter ? buildPostDeEsserFilters(params) : []
+    const compressionFilters = needsCompression ? buildCompressionFilters(params) : []
+    const fc = buildDeEsserFilterComplex(normPreFilters, postFilters, normAndLimit, params, false, compressionFilters)
     args.push('-filter_complex', fc, '-map', '[out]')
   } else {
-    const comp = buildCompressionFilters(params)
-    const post = buildPostDeEsserFilters(params)
-    // normPreFilters already includes the input-level normalisation volume filter.
+    const comp = needsCompression ? buildCompressionFilters(params) : []
+    const post = needsExciter ? buildPostDeEsserFilters(params) : []
     const fullChain = [...normPreFilters, ...comp, ...post, normAndLimit].filter(Boolean).join(',')
     args.push('-af', fullChain)
   }
@@ -967,15 +1144,12 @@ export async function exportFile(
     args.push(
       '-c:a', 'libmp3lame',
       '-b:a', QUALITY_BITRATE.mp3[options.quality],
-      // Prevent LAME's bitrate-dependent auto low-pass from making exports
-      // darker than the realtime Web Audio preview.
       '-cutoff', codecCutoffFor(options.sampleRate),
     )
   } else if (options.format === 'aac' || options.format === 'm4a') {
     args.push(
       '-c:a', 'aac',
       '-b:a', QUALITY_BITRATE.aac[options.quality],
-      // FFmpeg's AAC encoder also adapts bandwidth to bitrate by default.
       '-cutoff', codecCutoffFor(options.sampleRate),
     )
   } else if (options.format === 'ogg') {
@@ -989,6 +1163,7 @@ export async function exportFile(
   args.push('-y', outputName)
 
   await ffmpegManager.exec(args)
+  reporter.completeStep() // "Exportieren & Limiter"
 
   const data = await ffmpegManager.readFile(outputName)
   await ffmpegManager.deleteFile(inputName)
@@ -997,11 +1172,14 @@ export async function exportFile(
   }
   await ffmpegManager.deleteFile(outputName)
 
+  ffmpegManager.setProgressCallback(null)
+
   if (data.length === 0) {
     throw new Error('FFmpeg hat eine leere Ausgabedatei erzeugt. Bitte prüfen Sie die Filter-Einstellungen.')
   }
 
-  onProgress?.(100)
+  reporter.completeStep() // "Wird abgeschlossen"
+  reporter.finish()
 
   const mimeTypes: Record<string, string> = {
     mp3: 'audio/mpeg', wav: 'audio/wav', flac: 'audio/flac',

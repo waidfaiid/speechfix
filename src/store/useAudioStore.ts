@@ -7,6 +7,8 @@ interface AudioStore {
   currentTime: number
   duration: number
   isLoading: boolean
+  /** True while a playback chunk is being decoded (chunked mode on iOS). */
+  isChunkLoading: boolean
   analysis: AudioAnalysis | null
   abMode: 'original' | 'processed'
   ffmpegLoaded: boolean
@@ -19,6 +21,7 @@ interface AudioStore {
   setCurrentTime: (t: number) => void
   setDuration: (d: number) => void
   setIsLoading: (v: boolean) => void
+  setIsChunkLoading: (v: boolean) => void
   setAnalysis: (a: AudioAnalysis | null) => void
   setAbMode: (m: 'original' | 'processed') => void
   setFfmpegLoaded: (v: boolean) => void
@@ -33,6 +36,7 @@ export const useAudioStore = create<AudioStore>((set) => ({
   currentTime: 0,
   duration: 0,
   isLoading: false,
+  isChunkLoading: false,
   analysis: null,
   abMode: 'processed',
   ffmpegLoaded: false,
@@ -45,6 +49,7 @@ export const useAudioStore = create<AudioStore>((set) => ({
   setCurrentTime: (t) => set({ currentTime: t }),
   setDuration: (d) => set({ duration: d }),
   setIsLoading: (v) => set({ isLoading: v }),
+  setIsChunkLoading: (v) => set({ isChunkLoading: v }),
   setAnalysis: (a) => set({ analysis: a }),
   setAbMode: (m) => set({ abMode: m }),
   setFfmpegLoaded: (v) => set({ ffmpegLoaded: v }),

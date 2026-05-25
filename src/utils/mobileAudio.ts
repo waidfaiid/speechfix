@@ -7,8 +7,36 @@ export function isIOS(): boolean {
   )
 }
 
-/** Preview sample rate on iOS — keeps decoded RAM within Safari's tab budget. */
-export const IOS_PREVIEW_SAMPLE_RATE = 16_000
+/**
+ * AudioContext sample rate — 48 kHz on all platforms.
+ * RNNoise requires exactly 48 kHz (480-sample frames = 10 ms).
+ * On iOS we use chunked decoding to stay within Safari's memory budget
+ * while still delivering full-quality audio and noise reduction.
+ */
+export const AUDIO_CONTEXT_SAMPLE_RATE = 48_000
+
+/**
+ * How many seconds of audio to keep decoded at 48 kHz for live preview.
+ * On iOS, only this window is kept in memory; the rest is freed.
+ * 90 s × 48 kHz × mono × 4 bytes ≈ 17 MB — well within Safari's budget.
+ */
+export const CHUNK_DURATION_SEC = 90
+
+/**
+ * Start pre-fetching the next chunk when playback is within this many
+ * seconds of the chunk boundary.
+ */
+export const CHUNK_PREFETCH_SEC = 20
+
+/**
+ * Sample rate used for the waveform overview decode.
+ * Low enough that even a 3 h file is manageable (3 h × 8 kHz × 4 B ≈ 346 MB),
+ * but we only keep the extracted peak array (~9 MB for 3 h), not the raw samples.
+ */
+export const WAVEFORM_DECODE_RATE = 8_000
+
+/** Peaks per second stored in the waveform overview array. */
+export const WAVEFORM_PEAKS_PER_SEC = 100
 
 /** Bytes for a decoded float32 buffer (all channels). */
 export function estimateDecodedBytes(
@@ -23,7 +51,6 @@ export function estimateDecodedBytes(
 export function estimateDurationSec(file: File): number {
   const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
   if (LOSSLESS_EXTS.has(ext)) {
-    // ~1 MB/min stereo 44.1 kHz 16-bit is a coarse speech estimate
     return (file.size / (1024 * 1024)) * 60
   }
   const bitrateKbps = file.type.includes('mpeg') || ext === 'mp3' ? 128 : 192
@@ -33,14 +60,23 @@ export function estimateDurationSec(file: File): number {
 const LOSSLESS_EXTS = new Set(['wav', 'flac', 'aiff', 'aif'])
 
 /**
- * On iOS, Safari's MP3 decoder + a stereo AudioBuffer often exceeds the tab memory
- * limit for sermons longer than ~20 min. FFmpeg decodes directly to mono f32le.
+ * Whether this file needs chunked playback (iOS with files that would exceed
+ * the Safari tab memory budget if decoded fully at 48 kHz).
+ * Threshold: any file whose 48 kHz mono decode would exceed ~80 MB (≈ 7 min).
  */
-export function shouldDecodeViaFfmpeg(file: File): boolean {
+export function needsChunkedPlayback(file: File): boolean {
   if (!isIOS()) return false
   const durationSec = estimateDurationSec(file)
-  const bytes = estimateDecodedBytes(durationSec, IOS_PREVIEW_SAMPLE_RATE, 1)
-  return file.size > 12 * 1024 * 1024 || durationSec > 18 * 60 || bytes > 90 * 1024 * 1024
+  const bytes48k = estimateDecodedBytes(durationSec, AUDIO_CONTEXT_SAMPLE_RATE, 1)
+  return bytes48k > 80 * 1024 * 1024
+}
+
+/**
+ * Legacy compat: whether FFmpeg decode is needed.
+ * Now equivalent to needsChunkedPlayback (chunked mode uses FFmpeg).
+ */
+export function shouldDecodeViaFfmpeg(file: File): boolean {
+  return needsChunkedPlayback(file)
 }
 
 /** Slice used for integrated loudness on very long files (full pass is expensive). */

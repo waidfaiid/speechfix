@@ -5,15 +5,17 @@ export default {
   theme: {
     extend: {
       colors: {
-        background: '#0a0a0f',
-        card: '#111827',
-        'card-border': '#1f2937',
-        accent: '#6366f1',
-        'accent-hover': '#818cf8',
-        'text-primary': '#f8fafc',
-        'text-secondary': '#94a3b8',
-        'slider-track': '#1e293b',
-        'slider-thumb': '#6366f1',
+        background: '#0f0e0d',       
+        card: '#1c1a19',     
+        'card-elevated': '#262422',
+        'card-border': '#33302d',   
+        accent: '#f59e0b',   
+        'accent-hover': '#d97706',
+        'accent-glow': 'rgba(245, 158, 11, 0.2)',
+        'text-primary': '#f5f5f4',     
+        'text-secondary': '#a8a29e',
+        'slider-track': '#0f0e0d',
+        'slider-thumb': '#f5f5f4',
         success: '#22c55e',
         warning: '#f59e0b',
         error: '#ef4444',
@@ -24,6 +26,7 @@ export default {
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
+        tech: ['JetBrains Mono', 'ui-monospace', 'monospace'],
       },
       keyframes: {
         'fade-in': {

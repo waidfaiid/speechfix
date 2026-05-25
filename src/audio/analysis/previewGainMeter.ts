@@ -1,6 +1,6 @@
 import type { ProcessingParams } from '@/types/processing.types'
 import { createAutoCurve, createTapeCurve, createTubeCurve } from '@/utils/audioMath'
-import { compressBufferTwoStage } from './dynamicsMeter'
+import { compressBufferTwoStage, DYNAMICS_WORKING_LEVEL_LUFS } from './dynamicsMeter'
 import { LUFSAnalyzer } from './LUFSAnalyzer'
 
 const PREVIEW_SAMPLE_RATE = 48000
@@ -23,6 +23,8 @@ export interface ExportGainStaging {
   gainDb: number
   /** Cancels Chrome DynamicsCompressor auto-makeup to FFmpeg processed level. */
   postCompTrimDb: number
+  /** Bypass (Original) path gain — loudness-matched to the processed output. */
+  bypassGainDb: number
 }
 
 async function resampleToPreviewRate(buffer: AudioBuffer): Promise<AudioBuffer> {
@@ -348,5 +350,11 @@ export async function computeExportGainStaging(
   const postLimiter = measureLimitedLUFS(preLimiterBuffer, gainDb)
   gainDb = Math.max(-30, Math.min(30, gainDb - (postLimiter - exportFinalTarget)))
 
-  return { makeupDb, gainDb, postCompTrimDb }
+  // Bypass (Original) gain: same methodology so A/B comparison is loudness-matched.
+  const sourceLUFS = DYNAMICS_WORKING_LEVEL_LUFS - inputGainDb
+  let bypassGainDb = Math.max(-30, Math.min(30, exportFinalTarget - sourceLUFS))
+  const bypassPostLimiter = measureLimitedLUFS(segment, bypassGainDb)
+  bypassGainDb = Math.max(-30, Math.min(30, bypassGainDb - (bypassPostLimiter - exportFinalTarget)))
+
+  return { makeupDb, gainDb, postCompTrimDb, bypassGainDb }
 }

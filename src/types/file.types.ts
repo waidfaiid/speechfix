@@ -28,4 +28,5 @@ export interface ExportProgress {
   stepProgress: number
   stepLabel: string
   estimatedSecondsLeft: number
+  startedAt?: number
 }

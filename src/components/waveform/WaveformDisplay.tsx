@@ -2,10 +2,13 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { useAudioStore } from '@/store/useAudioStore'
 import { useProcessingStore } from '@/store/useProcessingStore'
 import { audioEngine } from '@/audio/AudioEngine'
+import { lerp } from '@/utils/audioMath'
 import { cn } from '@/utils/cn'
+import type { WaveformPeakData } from '@/audio/WaveformPeaks'
 
 interface WaveformDisplayProps {
   file: File
+  collapseProgress?: number
 }
 
 interface TrimMarkerProps {
@@ -141,12 +144,80 @@ function renderWaveform(
     const normMn = mn / peak
     const barY = mid - normMx * mid
     const barH = Math.max(1, (normMx - normMn) * mid)
-    ctx.fillStyle = '#6366f1'
+    ctx.fillStyle = '#f59e0b'
     ctx.fillRect(x, barY, 1, barH)
   }
 }
 
-export function WaveformDisplay({ file }: WaveformDisplayProps) {
+/**
+ * Render waveform from pre-computed peak data (used in chunked mode).
+ * Peaks are interleaved min/max pairs at a fixed rate (peaksPerSec).
+ */
+function renderWaveformFromPeaks(
+  canvas: HTMLCanvasElement,
+  peakData: WaveformPeakData,
+  viewStart = 0,
+  viewEnd = 1,
+  chunkStartFrac?: number,
+  chunkEndFrac?: number,
+): void {
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  const dpr = window.devicePixelRatio || 1
+  const w = canvas.offsetWidth
+  const h = canvas.offsetHeight
+  if (w <= 0 || h <= 0) return
+
+  canvas.width = Math.floor(w * dpr)
+  canvas.height = Math.floor(h * dpr)
+  ctx.scale(dpr, dpr)
+
+  ctx.fillStyle = '#0f172a'
+  ctx.fillRect(0, 0, w, h)
+
+  const { peaks, peakCount } = peakData
+  const startPeak = Math.floor(viewStart * peakCount)
+  const endPeak = Math.ceil(viewEnd * peakCount)
+  const visibleCount = Math.max(1, endPeak - startPeak)
+  const peaksPerPx = visibleCount / w
+  const mid = h / 2
+
+  let globalPeak = 0.001
+  const stride = Math.max(1, Math.floor(visibleCount / Math.max(w * 8, 1024)))
+  for (let i = startPeak; i < endPeak; i += stride) {
+    const mn = Math.abs(peaks[i * 2])
+    const mx = Math.abs(peaks[i * 2 + 1])
+    if (mn > globalPeak) globalPeak = mn
+    if (mx > globalPeak) globalPeak = mx
+  }
+
+  for (let x = 0; x < w; x++) {
+    const s = startPeak + Math.floor(x * peaksPerPx)
+    const e = Math.min(endPeak - 1, startPeak + Math.ceil((x + 1) * peaksPerPx))
+    let mn = 0, mx = 0
+    for (let i = s; i <= e; i++) {
+      if (i < 0 || i >= peakCount) continue
+      const lo = peaks[i * 2]
+      const hi = peaks[i * 2 + 1]
+      if (lo < mn) mn = lo
+      if (hi > mx) mx = hi
+    }
+    const normMx = mx / globalPeak
+    const normMn = mn / globalPeak
+    const barY = mid - normMx * mid
+    const barH = Math.max(1, (normMx - normMn) * mid)
+
+    // Subtle tint for the loaded chunk region
+    const audioFrac = viewStart + (x / w) * (viewEnd - viewStart)
+    const inChunk = chunkStartFrac !== undefined && chunkEndFrac !== undefined &&
+      audioFrac >= chunkStartFrac && audioFrac < chunkEndFrac
+    ctx.fillStyle = inChunk ? '#f59e0b' : '#b47a0a'
+    ctx.fillRect(x, barY, 1, barH)
+  }
+}
+
+export function WaveformDisplay({ file, collapseProgress = 0 }: WaveformDisplayProps) {
   const canvasRef    = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const bufferRef    = useRef<AudioBuffer | null>(null)
@@ -158,6 +229,7 @@ export function WaveformDisplay({ file }: WaveformDisplayProps) {
 
   const setCurrentTime = useAudioStore((s) => s.setCurrentTime)
   const isLoading      = useAudioStore((s) => s.isLoading)
+  const isChunkLoading = useAudioStore((s) => s.isChunkLoading)
   const analysisStatus = useProcessingStore((s) => s.analysisStatus)
   const analysisProgress = useProcessingStore((s) => s.analysisProgress)
   const currentTime    = useAudioStore((s) => s.currentTime)
@@ -166,6 +238,8 @@ export function WaveformDisplay({ file }: WaveformDisplayProps) {
   const trimEnd        = useAudioStore((s) => s.trimEnd)
   const setTrimStart   = useAudioStore((s) => s.setTrimStart)
   const setTrimEnd     = useAudioStore((s) => s.setTrimEnd)
+
+  const peaksRef = useRef<WaveformPeakData | null>(null)
 
   // Noise profile region (hum auto mode)
   const humAutoMode           = useProcessingStore((s) => s.humAutoMode)
@@ -190,9 +264,16 @@ export function WaveformDisplay({ file }: WaveformDisplayProps) {
   }
 
   function redrawWaveform() {
-    if (!bufferRef.current || !canvasRef.current) return
+    if (!canvasRef.current) return
     const { viewStart, viewEnd } = getView()
-    renderWaveform(canvasRef.current, bufferRef.current, viewStart, viewEnd)
+    if (peaksRef.current) {
+      const dur = peaksRef.current.duration
+      const chunkStart = dur > 0 ? audioEngine.chunkStartSec / dur : 0
+      const chunkEnd = dur > 0 ? audioEngine.chunkEndSec / dur : 0
+      renderWaveformFromPeaks(canvasRef.current, peaksRef.current, viewStart, viewEnd, chunkStart, chunkEnd)
+    } else if (bufferRef.current) {
+      renderWaveform(canvasRef.current, bufferRef.current, viewStart, viewEnd)
+    }
   }
 
   /** Apply a new zoom level keeping `cursorFrac` (canvas 0-1) anchored in audio space. */
@@ -369,13 +450,25 @@ export function WaveformDisplay({ file }: WaveformDisplayProps) {
 
   useEffect(() => {
     if (duration <= 0) return
-    const buf = audioEngine.loadedBuffer
-    if (!buf || !canvasRef.current) return
-    bufferRef.current = buf
+    if (!canvasRef.current) return
+
     // Reset zoom when a new file is loaded
     zoomRef.current = { zoom: 1, viewStart: 0 }
     setZoomVersion(0)
-    renderWaveform(canvasRef.current, buf)
+
+    // In chunked mode, use the peak data for the waveform
+    const peaks = audioEngine.waveformPeaks
+    if (peaks) {
+      peaksRef.current = peaks
+      bufferRef.current = null
+      renderWaveformFromPeaks(canvasRef.current, peaks)
+    } else {
+      const buf = audioEngine.loadedBuffer
+      if (!buf) return
+      bufferRef.current = buf
+      peaksRef.current = null
+      renderWaveform(canvasRef.current, buf)
+    }
   }, [duration, file])
 
   useEffect(() => {
@@ -412,38 +505,56 @@ export function WaveformDisplay({ file }: WaveformDisplayProps) {
   const noiseStartCanvas = audioToCanvas(noiseStartFrac)
   const noiseEndCanvas   = audioToCanvas(noiseEndFrac)
 
-  return (
-    <div className="px-4 py-3">
-      <div className="relative min-h-[72px]" data-waveform-container ref={containerRef}>
+  const cp = collapseProgress
+  const waveH = Math.round(lerp(96, 12, cp))
+  const showDetails = cp < 0.7
+  const padX = Math.round(lerp(12, 4, cp))
+  const padB = Math.round(lerp(8, 2, cp))
+  const borderR = Math.round(lerp(8, 3, cp))
 
+  return (
+    <div style={{ padding: `0 ${padX}px ${padB}px` }}>
+      <div
+        className="relative overflow-hidden bg-background"
+        style={{
+          minHeight: `${waveH}px`,
+          borderRadius: `${borderR}px`,
+          border: cp < 0.9 ? '1px solid #33302d' : '1px solid rgba(51,48,45,0.3)',
+        }}
+        data-waveform-container
+        ref={containerRef}
+      >
         <canvas
           ref={canvasRef}
-          className={cn('w-full h-[72px] rounded-lg block', isAnalyzing && 'opacity-0')}
+          className={cn('w-full block', isAnalyzing && 'opacity-0')}
           onClick={handleCanvasClick}
           onTouchStart={handleCanvasTouchStart}
           onTouchEnd={handleCanvasTouchEnd}
-          style={{ cursor: duration > 0 ? 'pointer' : 'default', touchAction: 'pan-y' }}
+          style={{
+            height: `${waveH}px`,
+            cursor: duration > 0 ? 'pointer' : 'default',
+            touchAction: 'pan-y',
+          }}
         />
 
+        {/* Progress tint + playback cursor — always visible */}
         {!isAnalyzing && duration > 0 && (
           <>
-            {/* Played-region tint */}
             <div
-              className="absolute top-0 bottom-0 bg-accent/20 rounded-l-lg pointer-events-none"
+              className="absolute top-0 bottom-0 bg-accent-glow pointer-events-none"
               style={{ width: `${Math.max(0, Math.min(1, progressCanvas)) * 100}%` }}
             />
-            {/* Playback cursor */}
             {progressCanvas >= 0 && progressCanvas <= 1 && (
               <div
-                className="absolute top-0 bottom-0 w-0.5 bg-accent pointer-events-none"
+                className="absolute top-0 bottom-0 w-[1px] bg-accent shadow-[0_0_8px_rgba(245,158,11,1)] z-10 pointer-events-none"
                 style={{ left: `${progressCanvas * 100}%` }}
               />
             )}
           </>
         )}
 
-        {/* Trimmed-region overlays */}
-        {!isAnalyzing && duration > 0 && (
+        {/* Trimmed-region overlays — hidden when collapsed */}
+        {!isAnalyzing && duration > 0 && showDetails && (
           <>
             {trimStart > 0 && (
               <div
@@ -470,8 +581,8 @@ export function WaveformDisplay({ file }: WaveformDisplayProps) {
           </>
         )}
 
-        {/* Trim markers */}
-        {!isAnalyzing && (
+        {/* Trim markers — hidden when collapsed */}
+        {!isAnalyzing && showDetails && (
           <>
             {showStartMarker && (
               <TrimMarker position={startFracCanvas} onDrag={handleStartDrag} side="start" />
@@ -482,8 +593,8 @@ export function WaveformDisplay({ file }: WaveformDisplayProps) {
           </>
         )}
 
-        {/* Noise-profile region overlay (green) */}
-        {!isAnalyzing && showNoiseRegion && (
+        {/* Noise-profile region — hidden when collapsed */}
+        {!isAnalyzing && showNoiseRegion && showDetails && (
           <>
             <div
               className="absolute top-0 bottom-0 pointer-events-none z-10"
@@ -497,7 +608,6 @@ export function WaveformDisplay({ file }: WaveformDisplayProps) {
             />
             <TrimMarker position={noiseStartCanvas} onDrag={handleNoiseProfileStartDrag} side="start" color="green" />
             <TrimMarker position={noiseEndCanvas}   onDrag={handleNoiseProfileEndDrag}   side="end"   color="green" />
-            {/* Label */}
             {noiseEndCanvas > noiseStartCanvas + 0.05 && (
               <div
                 className="absolute z-20 pointer-events-none"
@@ -515,8 +625,8 @@ export function WaveformDisplay({ file }: WaveformDisplayProps) {
           </>
         )}
 
-        {/* Zoom minimap — thin bar at bottom showing current view window */}
-        {!isAnalyzing && zoomedIn && (
+        {/* Zoom minimap */}
+        {!isAnalyzing && zoomedIn && showDetails && (
           <div className="absolute bottom-0 left-0 right-0 h-1 rounded-b-lg bg-card-border/60 pointer-events-none z-30">
             <div
               className="absolute top-0 bottom-0 bg-accent/70 rounded-full"
@@ -529,7 +639,7 @@ export function WaveformDisplay({ file }: WaveformDisplayProps) {
         )}
 
         {/* Zoom level badge */}
-        {!isAnalyzing && zoomedIn && (
+        {!isAnalyzing && zoomedIn && showDetails && (
           <div className="absolute top-1 right-1.5 z-30 pointer-events-none">
             <span className="text-[9px] font-semibold text-accent/80 bg-black/40 px-1 py-0.5 rounded tabular-nums">
               {zoom.toFixed(1)}×
@@ -551,6 +661,21 @@ export function WaveformDisplay({ file }: WaveformDisplayProps) {
                 )}
                 style={{ width: `${loadingProgress}%` }}
               />
+            </div>
+          </div>
+        )}
+
+        {/* Chunk loading overlay (shown when seeking in chunked mode) */}
+        {!isAnalyzing && isChunkLoading && (
+          <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/70 z-30 pointer-events-none">
+            <div className="flex items-center gap-2 bg-card/90 px-3 py-1.5 rounded-full shadow-lg">
+              <svg className="animate-spin h-3.5 w-3.5 text-accent" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <span className="text-[10px] font-medium text-text-secondary whitespace-nowrap">
+                Audio wird geladen …
+              </span>
             </div>
           </div>
         )}

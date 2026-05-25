@@ -1,4 +1,4 @@
-import { Radio, Volume2, SlidersHorizontal, Sparkles, Target, AudioWaveform, Mic, Music, Loader2, AlertCircle, Wand2, RotateCcw, Waves, Flame, Zap } from 'lucide-react'
+import { Radio, Volume2, SlidersHorizontal, Sparkles, AudioWaveform, Mic, Music, Loader2, AlertCircle, Wand2, RotateCcw, Waves, Flame, Zap } from 'lucide-react'
 import { useProcessingStore } from '@/store/useProcessingStore'
 import { useAudioStore } from '@/store/useAudioStore'
 import { useUIStore } from '@/store/useUIStore'
@@ -6,10 +6,7 @@ import { audioEngine } from '@/audio/AudioEngine'
 import { analyzeNoiseProfile } from '@/audio/analysis/HumAnalyzer'
 import { ProcessingSlider } from './ProcessingSlider'
 import { DynamicsCompressorSection } from './DynamicsCompressorSection'
-import { LimiterStatus } from './LimiterStatus'
 import { cn } from '@/utils/cn'
-
-const LUFS_OPTIONS = [-14, -16] as const
 
 // ---------------------------------------------------------------------------
 // HumSection – Brummen with one-button auto-profile workflow
@@ -79,21 +76,22 @@ function HumSection() {
   // Button label & style
   let btnLabel: React.ReactNode
   let btnDisabled = false
-  let btnStyle = 'bg-slider-track text-text-secondary border-card-border hover:text-text-primary'
+  let btnStyle = 'text-text-secondary'
 
   if (store.humAnalysisState === 'analyzing') {
     btnLabel    = <><Loader2 size={9} className="animate-spin shrink-0" /><span>Analysiere…</span></>
     btnDisabled = true
-    btnStyle    = 'bg-slider-track text-text-secondary border-card-border opacity-60'
+    btnStyle    = 'text-text-secondary opacity-60'
   } else if (profileDone) {
-    btnLabel = <><RotateCcw size={9} className="shrink-0" /><span>Profil erneuern</span></>
-    btnStyle = 'bg-green-500/10 text-green-400 border-green-500/30 hover:bg-green-500/20'
+    btnLabel = <span>Brummprofil aktiv</span>
+    btnStyle = 'text-accent'
   } else if (selecting && hasRegion) {
     btnLabel = <><Wand2 size={9} className="shrink-0" /><span>Analysieren</span></>
-    btnStyle = 'bg-green-500/15 text-green-400 border-green-500/30 hover:bg-green-500/25'
+    btnStyle = 'text-green-400'
   } else {
     // idle or selecting-without-region: always show "Brummprofil"
     btnLabel = <><Wand2 size={9} className="shrink-0" /><span>Brummprofil</span></>
+    btnStyle = 'bg-card-elevated border border-accent/30 text-accent rounded-full px-3 py-1 hover:bg-accent/20'
   }
 
   const profileButton = (
@@ -102,7 +100,7 @@ function HumSection() {
       onClick={handleProfileButton}
       disabled={btnDisabled || duration <= 0}
       className={cn(
-        'flex items-center gap-1 px-2 py-0.5 rounded-pill text-[10px] font-medium transition-colors whitespace-nowrap border',
+        'text-[9px] uppercase tracking-wide font-medium transition-colors flex items-center gap-1',
         btnStyle,
         (btnDisabled || duration <= 0) && 'opacity-50 cursor-not-allowed',
       )}
@@ -110,6 +108,7 @@ function HumSection() {
       {btnLabel}
     </button>
   )
+
 
 
   return (
@@ -157,64 +156,56 @@ export function ProcessingPanel() {
   const isOriginalMode = abMode === 'original'
 
   return (
-    <div className="px-4 pb-4 space-y-5">
-
-      {/* Content Type + A/B Compare — always active */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <div className="flex gap-1.5">
-            {([
-              { value: 'speech', label: 'Redner', icon: <Mic size={13} /> },
-              { value: 'mixed',  label: 'Live', icon: <Music size={13} /> },
-            ] as const).map(({ value, label, icon }) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => store.setContentType(value)}
-                className={cn(
-                  'flex items-center justify-center gap-1 py-2 px-3 rounded-pill text-xs font-medium transition-colors whitespace-nowrap',
-                  store.contentType === value
-                    ? 'bg-accent/20 text-accent border border-accent/30'
-                    : 'bg-slider-track text-text-secondary hover:text-text-primary border border-transparent',
-                )}
-              >
-                {icon}
-                {label}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex gap-1 ml-auto shrink-0">
-            {(['original', 'processed'] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => { setAbMode(mode); audioEngine.setABMode(mode) }}
-                className={cn(
-                  'px-2.5 py-1.5 rounded-pill text-xs font-medium transition-colors whitespace-nowrap',
-                  abMode === mode
-                    ? 'bg-accent text-white'
-                    : 'bg-slider-track text-text-secondary hover:text-text-primary',
-                )}
-              >
-                {mode === 'original' ? 'Original' : 'Bearbeitet'}
-              </button>
-            ))}
-          </div>
+    <div className="px-3 pb-4 space-y-4">
+      {/* PROFIL & A/B */}
+      <div className="flex gap-2 mb-6">
+        <div className="flex bg-background border border-card-border rounded-lg p-1 flex-1 min-w-0 relative">
+          <div 
+            className="absolute top-1 bottom-1 w-[calc(50%-4px)] bg-card-elevated rounded-md shadow-sm border border-card-border transition-all duration-300"
+            style={{ left: store.contentType === 'speech' ? '4px' : 'calc(50%)' }}
+          ></div>
+          <button 
+            type="button"
+            onClick={() => store.setContentType('speech')}
+            className={cn("flex-1 py-2 text-xs font-medium rounded-md flex justify-center items-center gap-1 relative z-10 transition-colors", store.contentType === 'speech' ? "text-white" : "text-text-secondary hover:text-white")}
+          >
+            <Mic size={12} className={store.contentType === 'speech' ? "text-accent" : ""} /> Redner
+          </button>
+          <button 
+            type="button"
+            onClick={() => store.setContentType('mixed')}
+            className={cn("flex-1 py-2 text-xs font-medium rounded-md flex justify-center items-center gap-1 relative z-10 transition-colors", store.contentType === 'mixed' ? "text-white" : "text-text-secondary hover:text-white")}
+          >
+            <Music size={12} className={store.contentType === 'mixed' ? "text-accent" : ""} /> Live
+          </button>
+        </div>
+        
+        <div className="flex bg-background border border-card-border rounded-lg p-1 flex-1 min-w-0 relative">
+          <div 
+            className="absolute top-1 bottom-1 w-[calc(50%-4px)] bg-accent/20 rounded-md shadow-sm border border-accent/50 transition-all duration-300"
+            style={{ left: abMode === 'original' ? '4px' : 'calc(50%)' }}
+          ></div>
+          <button 
+            type="button"
+            onClick={() => { setAbMode('original'); audioEngine.setABMode('original') }}
+            className={cn("flex-1 py-2 text-xs font-medium rounded-md relative z-10 transition-colors", abMode === 'original' ? "text-accent" : "text-text-secondary hover:text-white")}
+          >
+            Original
+          </button>
+          <button 
+            type="button"
+            onClick={() => { setAbMode('processed'); audioEngine.setABMode('processed') }}
+            className={cn("flex-1 py-2 text-xs font-medium rounded-md relative z-10 transition-colors", abMode === 'processed' ? "text-accent" : "text-text-secondary hover:text-white")}
+          >
+            Bearbeitet
+          </button>
         </div>
       </div>
 
-      {isOriginalMode && (
-        <p className="text-center text-xs text-text-secondary py-1">
-          Original-Modus — Effekte werden nicht angewendet
-        </p>
-      )}
-
       <div className={cn(
-        'space-y-5 transition-opacity duration-200',
-        isOriginalMode && 'opacity-30 pointer-events-none select-none',
+        'transition-opacity duration-200',
+        isOriginalMode && 'opacity-50 pointer-events-none select-none',
       )}>
-
         {/* Hum */}
         <HumSection />
 
@@ -231,7 +222,7 @@ export function ProcessingPanel() {
 
         {/* EQ */}
         <ProcessingSlider
-          label="Klang der Stimme / Equalizer"
+          label="Klang (EQ)"
           icon={<SlidersHorizontal size={16} />}
           value={store.eqIntensity}
           onChange={store.setEqIntensity}
@@ -242,14 +233,14 @@ export function ProcessingPanel() {
             <button
               type="button"
               onClick={() => setShowEQPro(true)}
-              className="ml-2 px-2 py-0.5 text-xs font-medium text-accent border border-accent/30 rounded-pill hover:bg-accent/10 transition-colors"
+              className="ml-2 px-1.5 py-0.5 text-[9px] font-bold text-accent bg-accent/20 border border-transparent rounded uppercase hover:bg-accent/30 transition-colors"
             >
               Pro
             </button>
           }
         />
 
-        {/* Compressor + Dynamics visualisation */}
+        {/* Compressor + Dynamics */}
         <DynamicsCompressorSection />
 
         {/* De-esser */}
@@ -262,8 +253,8 @@ export function ProcessingPanel() {
           onToggle={store.setDesibilanceEnabled}
           displayValue={
             store.desibilanceAmount === 0
-              ? 'aus'
-              : `${Math.round(store.desibilanceAmount * 100)}% · ${Math.round(store.desibilanceFreq / 100) / 10} kHz`
+              ? 'Aus'
+              : `${Math.round(store.desibilanceAmount * 100)}%`
           }
         />
 
@@ -276,72 +267,29 @@ export function ProcessingPanel() {
           enabled={store.exciterEnabled}
           onToggle={store.setExciterEnabled}
           displayValue={`${Math.round(store.exciterAmount * 100)}%`}
-          action={
-            <div className="flex gap-1 ml-1">
-              {([
-                { id: 'auto', label: 'Natürlich', icon: <Waves size={9} />, title: 'Wärme + Präsenz' },
-                { id: 'tube', label: 'Wärme',     icon: <Flame size={9} />, title: 'Röhre · rund & körperreich' },
-                { id: 'tape', label: 'Präsenz',   icon: <Zap   size={9} />, title: 'Band · klar & durchsetzend' },
-              ] as const).map(({ id, label, icon, title }) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => store.setExciterMode(id)}
-                  title={title}
-                  className={cn(
-                    'flex items-center gap-1 px-1.5 py-0.5 rounded-pill text-[10px] font-medium transition-colors whitespace-nowrap border',
-                    store.exciterMode === id
-                      ? 'bg-accent/20 text-accent border-accent/30'
-                      : 'bg-slider-track text-text-secondary hover:text-text-primary border-transparent',
-                  )}
-                >
-                  {icon}
-                  {label}
-                </button>
-              ))}
-            </div>
-          }
-        />
-
-        {/* Ziel-Lautheit + Limiter-Status — below Exciter, above Export */}
-        <div className="bg-card border border-card-border rounded-card p-4 space-y-4">
-          <LimiterStatus
-            interventionDb={store.limiterInterventionDb}
-            isPlaying={isPlaying}
-          />
-
-          <div className="border-t border-card-border pt-4 space-y-3">
-            <div className="flex items-center gap-2">
-              <Target size={16} className="text-text-secondary" />
-              <span className="font-medium text-text-primary text-sm">Ziel-Lautheit</span>
-              <span className="ml-auto text-accent text-sm font-semibold tabular-nums">
-                {store.limiterTarget} LUFS
-              </span>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              {LUFS_OPTIONS.map((val) => (
-                <button
-                  key={val}
-                  type="button"
-                  onClick={() => store.setLimiterTarget(val)}
-                  className={cn(
-                    'py-2.5 rounded-lg text-sm font-medium transition-colors',
-                    store.limiterTarget === val
-                      ? 'bg-accent text-white'
-                      : 'bg-slider-track text-text-secondary hover:text-text-primary',
-                  )}
-                >
-                  {val} LUFS
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-text-secondary leading-relaxed">
-              {store.limiterTarget === -14 && 'Streaming (Spotify, YouTube) — etwas lauter.'}
-              {store.limiterTarget === -16 && 'Standard für Podcasts & Predigten — empfohlen.'}
-            </p>
+        >
+          <div className="flex gap-2 mb-2 bg-background p-1 rounded-lg border border-card-border mt-2">
+            {([
+              { id: 'auto', label: 'Natürlich' },
+              { id: 'tube', label: 'Wärme' },
+              { id: 'tape', label: 'Präsenz' },
+            ] as const).map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => store.setExciterMode(id)}
+                className={cn(
+                  'flex-1 py-1.5 text-[10px] font-medium rounded-md transition-colors',
+                  store.exciterMode === id
+                    ? 'bg-card-elevated text-white shadow-sm border border-card-border'
+                    : 'text-text-secondary hover:text-white border border-transparent'
+                )}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-        </div>
-
+        </ProcessingSlider>
       </div>
     </div>
   )

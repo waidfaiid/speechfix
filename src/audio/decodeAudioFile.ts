@@ -1,8 +1,8 @@
 import { ffmpegManager } from '@/audio/ffmpeg/FFmpegManager'
 import {
-  IOS_PREVIEW_SAMPLE_RATE,
+  AUDIO_CONTEXT_SAMPLE_RATE,
   isIOS,
-  shouldDecodeViaFfmpeg,
+  needsChunkedPlayback,
 } from '@/utils/mobileAudio'
 
 function decodeWithWebAudio(ctx: AudioContext, arrayBuffer: ArrayBuffer): Promise<AudioBuffer> {
@@ -42,10 +42,79 @@ function downmixToMono(buffer: AudioBuffer, ctx: BaseAudioContext): AudioBuffer 
   return mono
 }
 
-async function decodeViaFfmpeg(file: File, sampleRate: number): Promise<AudioBuffer> {
-  if (!ffmpegManager.isLoaded) {
-    await ffmpegManager.load()
+/**
+ * Shared FFmpeg input file management: keeps the file written to FFmpeg FS
+ * once and reuses across chunk decodes for the same file.
+ */
+let _ffmpegInputFile: { name: string; fileRef: File } | null = null
+
+async function ensureFfmpegInput(file: File): Promise<string> {
+  if (_ffmpegInputFile && _ffmpegInputFile.fileRef === file) return _ffmpegInputFile.name
+  if (_ffmpegInputFile) {
+    await ffmpegManager.deleteFile(_ffmpegInputFile.name).catch(() => {})
   }
+  if (!ffmpegManager.isLoaded) await ffmpegManager.load()
+  const ext = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : 'mp3'
+  const name = `chunk_src.${ext}`
+  await ffmpegManager.writeFile(name, file)
+  _ffmpegInputFile = { name, fileRef: file }
+  return name
+}
+
+/** Release the cached FFmpeg input file. */
+export function releaseFfmpegInput(): void {
+  if (_ffmpegInputFile) {
+    ffmpegManager.deleteFile(_ffmpegInputFile.name).catch(() => {})
+    _ffmpegInputFile = null
+  }
+}
+
+/**
+ * Decode a time-range chunk of a file via FFmpeg at the given sample rate.
+ * Returns a mono AudioBuffer. Used for chunked playback on iOS.
+ */
+export async function decodeChunk(
+  file: File,
+  startSec: number,
+  durationSec: number,
+  sampleRate: number = AUDIO_CONTEXT_SAMPLE_RATE,
+): Promise<AudioBuffer> {
+  if (!ffmpegManager.isLoaded) await ffmpegManager.load()
+
+  const inputName = await ensureFfmpegInput(file)
+  const stamp = Date.now()
+  const outputName = `chunk_${stamp}.f32le`
+
+  try {
+    const args = ['-ss', startSec.toFixed(3)]
+    if (durationSec > 0) args.push('-t', durationSec.toFixed(3))
+    args.push('-i', inputName, '-ac', '1', '-ar', String(sampleRate), '-f', 'f32le', outputName)
+
+    await ffmpegManager.exec(args)
+
+    const raw = await ffmpegManager.readFile(outputName)
+    const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
+    const sampleCount = Math.floor(bytes.byteLength / 4)
+
+    const ctx = new OfflineAudioContext(1, Math.max(1, sampleCount), sampleRate)
+    const buffer = ctx.createBuffer(1, sampleCount, sampleRate)
+    const channel = buffer.getChannelData(0)
+    const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 4)
+    const blockSize = 65_536
+    for (let off = 0; off < sampleCount; off += blockSize) {
+      const end = Math.min(sampleCount, off + blockSize)
+      for (let i = off; i < end; i++) {
+        channel[i] = view.getFloat32(i * 4, true)
+      }
+    }
+    return buffer
+  } finally {
+    await ffmpegManager.deleteFile(outputName)
+  }
+}
+
+async function decodeViaFfmpeg(file: File, sampleRate: number): Promise<AudioBuffer> {
+  if (!ffmpegManager.isLoaded) await ffmpegManager.load()
 
   const inputExt = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : 'mp3'
   const inputName = `decode_in_${Date.now()}.${inputExt}`
@@ -65,13 +134,13 @@ async function decodeViaFfmpeg(file: File, sampleRate: number): Promise<AudioBuf
     const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw as ArrayBuffer)
     const sampleCount = Math.floor(bytes.byteLength / 4)
 
-    const ctx = new OfflineAudioContext(1, 1, sampleRate)
+    const ctx = new OfflineAudioContext(1, Math.max(1, sampleCount), sampleRate)
     const buffer = ctx.createBuffer(1, sampleCount, sampleRate)
     const channel = buffer.getChannelData(0)
     const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 4)
-    const chunk = 65_536
-    for (let off = 0; off < sampleCount; off += chunk) {
-      const end = Math.min(sampleCount, off + chunk)
+    const blockSize = 65_536
+    for (let off = 0; off < sampleCount; off += blockSize) {
+      const end = Math.min(sampleCount, off + blockSize)
       for (let i = off; i < end; i++) {
         channel[i] = view.getFloat32(i * 4, true)
       }
@@ -84,7 +153,7 @@ async function decodeViaFfmpeg(file: File, sampleRate: number): Promise<AudioBuf
 }
 
 export interface DecodeAudioOptions {
-  /** Target preview sample rate (AudioContext rate on mobile). */
+  /** Target preview sample rate (AudioContext rate). */
   sampleRate: number
   /** Force mono output to halve RAM on mobile. */
   forceMono?: boolean
@@ -104,7 +173,7 @@ export async function decodeAudioFile(
 
   let buffer: AudioBuffer
 
-  if (shouldDecodeViaFfmpeg(file)) {
+  if (needsChunkedPlayback(file)) {
     try {
       buffer = await decodeViaFfmpeg(file, sampleRate)
     } catch (err) {
