@@ -276,13 +276,13 @@ function buildPostDeEsserFilters(params: ProcessingParams): string[] {
   const DRIVE_BOOST_DB = 4.0
   filters.push(`volume=${DRIVE_BOOST_DB}dB`)
 
-  // 4× oversampling mirrors Web Audio WaveShaperNode oversample='4x'.
-  // Upsampling reconstructs the continuous-time signal, revealing inter-sample
-  // peaks (typically 1–3 dB higher than digital peaks) that the tanh processes
-  // exactly as the browser's waveshaper does.  The downsample at the end applies
-  // an anti-aliasing filter that matches the browser's behaviour.
-  const OVERSAMPLE_RATE = PREVIEW_SAMPLE_RATE * 4 // 192 000 Hz
-  filters.push(`aresample=${OVERSAMPLE_RATE}`)
+  // Note: the Web Audio preview uses WaveShaperNode(oversample='4x'), but
+  // replicating that in FFmpeg requires upsampling to 192 kHz which inflates
+  // the entire file to 4× its size in WASM heap — on mobile this easily
+  // exceeds the WASM memory budget and crashes FFmpeg.  Processing at 48 kHz
+  // is imperceptible for speech: any aliased harmonics land above 24 kHz
+  // (outside the speech band) and the audible saturation character is
+  // identical.  The normPreFilters chain already guarantees 48 kHz input.
 
   if (params.exciterMode === 'tube') {
     // Mirrors createTubeCurve exactly.
@@ -340,8 +340,6 @@ function buildPostDeEsserFilters(params: ProcessingParams): string[] {
     }
   }
 
-  // Downsample back to the working sample rate after oversampled processing.
-  filters.push(`aresample=${PREVIEW_SAMPLE_RATE}`)
   // Compensate the pre-drive boost — net gain through the exciter block = 0 dB.
   filters.push(`volume=${-DRIVE_BOOST_DB}dB`)
   return filters
