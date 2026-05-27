@@ -41,8 +41,7 @@ const WORKFLOW_STEPS = [
   { icon: CheckCircle2, label: 'Fertig' },
 ] as const
 
-const HERO_BULLETS = [
-  'professionelle Audio Aufbereitung',
+const HERO_LINES = [
   'für Reden, Predigten und Podcasts',
   '— direkt hier im Browser',
 ] as const
@@ -52,15 +51,9 @@ function LandingHero() {
     <div className="w-full flex items-start gap-3 sm:gap-4 text-left">
       <SpeechFixLogo layout="stacked" className="shrink-0" />
       <ul className="flex-1 min-w-0 list-none space-y-1.5 pt-2 sm:pt-2.5 m-0 p-0">
-        {HERO_BULLETS.map((line) => (
-          <li
-            key={line}
-            className="flex gap-2 text-[11px] sm:text-xs text-text-secondary leading-snug"
-          >
-            <span className="text-accent font-bold shrink-0 leading-snug" aria-hidden>
-              ·
-            </span>
-            <span>{line}</span>
+        {HERO_LINES.map((line) => (
+          <li key={line} className="text-[11px] sm:text-xs text-text-secondary leading-snug">
+            {line}
           </li>
         ))}
       </ul>
