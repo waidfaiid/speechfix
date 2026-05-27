@@ -276,6 +276,21 @@ function buildPostDeEsserFilters(params: ProcessingParams): string[] {
   const DRIVE_BOOST_DB = 4.0
   filters.push(`volume=${DRIVE_BOOST_DB}dB`)
 
+  // Fix FFmpeg channel-layout negotiation before oversampling.
+  //
+  // When the input comes from the concat pre-pass (mono FLAC chunks) the
+  // channel layout can become ambiguous after passing through the compressor
+  // stages.  FFmpeg's filter-graph negotiator cannot resolve the circular
+  // dependency that arises between aresample and aeval=…:c=same when the
+  // upstream channel layout is undefined, producing:
+  //   "Cannot select channel layout for the link between aresample and aeval"
+  //
+  // Inserting aformat=channel_layouts=mono before the upsampler pins the
+  // layout explicitly.  For stereo sources this downmixes to mono before
+  // saturation — a quality-neutral choice for speech/sermon content since
+  // the output is upmixed back to stereo by the encoder's -ac 2 option.
+  filters.push('aformat=channel_layouts=mono')
+
   // 4× oversampling mirrors Web Audio WaveShaperNode oversample='4x'.
   // FFmpeg processes audio frame-by-frame (~4096 samples), so the upsampled
   // frames are only ~65 KB in flight at any time — no WASM memory pressure.
