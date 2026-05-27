@@ -35,30 +35,22 @@ const BENEFITS: ReadonlyArray<{ icon: LucideIcon; text: string }> = [
 ]
 
 const WORKFLOW_STEPS = [
-  { icon: Upload, label: 'Importieren', step: 1 },
-  { icon: Headphones, label: 'Hören', step: 2 },
-  { icon: SlidersHorizontal, label: 'Regler justieren', step: 3 },
-  { icon: Download, label: 'Exportieren', step: 4 },
-  { icon: CheckCircle2, label: 'Fertig', step: 5 },
+  { icon: Upload, label: 'Importieren' },
+  { icon: Headphones, label: 'Hören' },
+  { icon: SlidersHorizontal, label: 'Regler justieren' },
+  { icon: Download, label: 'Exportieren' },
+  { icon: CheckCircle2, label: 'Fertig' },
 ] as const
 
 function WorkflowJourney() {
   return (
     <section
-      className="w-full mt-3 rounded-2xl border-2 border-accent/40 bg-gradient-to-b from-accent/15 via-card to-background p-4 shadow-[0_8px_32px_rgba(245,158,11,0.12)]"
+      className="w-full mt-2.5 rounded-xl border border-accent/30 bg-gradient-to-b from-accent/10 via-card/80 to-card/40 px-2 py-2.5 shadow-inner shadow-black/15"
       aria-label="Ablauf in fünf Schritten"
     >
-      <p className="text-base font-bold text-white text-center leading-tight tracking-tight">
-        In fünf Schritten — fertig
-      </p>
-      <p className="text-xs text-text-secondary text-center mt-1 mb-4">
-        Schnell, klar, ohne Umwege
-      </p>
-
-      {/* Große horizontale Schritte — auf dem Handy sofort erfassbar */}
-      <ol className="relative flex items-start justify-between gap-1">
+      <ol className="relative flex items-start justify-between gap-0.5">
         <div
-          className="pointer-events-none absolute left-[10%] right-[10%] top-6 h-0.5 bg-gradient-to-r from-accent/20 via-accent/60 to-accent/20 rounded-full"
+          className="pointer-events-none absolute left-[10%] right-[10%] top-[18px] h-px bg-gradient-to-r from-accent/20 via-accent/50 to-accent/20 rounded-full"
           aria-hidden
         />
         {WORKFLOW_STEPS.map((step, index) => {
@@ -68,26 +60,23 @@ function WorkflowJourney() {
             <li key={step.label} className="relative z-10 flex flex-1 min-w-0 flex-col items-center">
               <div
                 className={cn(
-                  'w-12 h-12 rounded-2xl flex items-center justify-center border-2 shadow-lg shadow-black/30',
+                  'w-9 h-9 rounded-xl flex items-center justify-center border shadow-sm shadow-black/20',
                   isLast
-                    ? 'bg-success/20 border-success/50'
-                    : 'bg-background border-accent/50',
+                    ? 'bg-success/15 border-success/40'
+                    : 'bg-background/90 border-accent/40',
                 )}
               >
                 <Icon
-                  className={cn('w-6 h-6', isLast ? 'text-success' : 'text-accent')}
+                  className={cn('w-4 h-4', isLast ? 'text-success' : 'text-accent')}
                   aria-hidden
                 />
               </div>
-              <span className="mt-2 text-[10px] sm:text-[11px] font-bold text-white text-center leading-tight px-0.5">
+              <span className="mt-1 text-[9px] font-semibold text-white text-center leading-tight px-0.5">
                 {step.label}
-              </span>
-              <span className="mt-0.5 text-[9px] font-tech text-accent/80 tabular-nums">
-                {step.step}
               </span>
               {!isLast && (
                 <ChevronRight
-                  className="absolute -right-1 top-5 w-4 h-4 text-accent/70 hidden min-[360px]:block"
+                  className="absolute -right-0.5 top-3.5 w-3 h-3 text-accent/60 hidden min-[360px]:block"
                   aria-hidden
                 />
               )}
@@ -95,27 +84,6 @@ function WorkflowJourney() {
           )
         })}
       </ol>
-
-      {/* Lesbare Zeile darunter — falls die Icons zu eng sind */}
-      <p className="mt-4 text-center text-[11px] font-medium text-text-primary leading-relaxed px-1">
-        <span className="text-accent">Importieren</span>
-        <span className="text-text-secondary mx-1.5" aria-hidden>
-          →
-        </span>
-        <span className="text-accent">Hören</span>
-        <span className="text-text-secondary mx-1.5" aria-hidden>
-          →
-        </span>
-        <span className="text-accent">Regler</span>
-        <span className="text-text-secondary mx-1.5" aria-hidden>
-          →
-        </span>
-        <span className="text-accent">Export</span>
-        <span className="text-text-secondary mx-1.5" aria-hidden>
-          →
-        </span>
-        <span className="text-success">Fertig</span>
-      </p>
     </section>
   )
 }
@@ -186,15 +154,18 @@ export function ImportLanding() {
           <div className="w-full mt-2">
             <FileUploadArea variant="landing" picker={picker} />
           </div>
-          <WorkflowJourney />
-          <ul className="w-full mt-2 space-y-1 text-left">
+          <ul className="w-full mt-3 space-y-1.5 text-left">
             {BENEFITS.map(({ icon: Icon, text }) => (
-              <li key={text} className="flex items-center gap-2 px-1 py-0.5">
-                <Icon className="w-3.5 h-3.5 text-accent shrink-0" aria-hidden />
+              <li
+                key={text}
+                className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-card/50 border border-card-border/70"
+              >
+                <Icon className="w-3.5 h-3.5 text-accent shrink-0 mt-0.5" aria-hidden />
                 <span className="text-[11px] text-text-primary leading-snug">{text}</span>
               </li>
             ))}
           </ul>
+          <WorkflowJourney />
         </div>
       </header>
 
