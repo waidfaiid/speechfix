@@ -60,14 +60,17 @@ function BenefitsList() {
   return (
     <ul className="w-full mt-3.5 rounded-xl border border-card-border/60 bg-card/35 overflow-hidden divide-y divide-card-border/50 shadow-sm shadow-black/10">
       {BENEFITS.map(({ icon: Icon, text }) => (
-        <li key={text} className="flex items-start gap-3 px-3.5 py-2.5 sm:py-3">
+        <li
+          key={text}
+          className="grid grid-cols-[2rem_1fr] items-center gap-x-3 px-3.5 py-3 min-h-[2.75rem]"
+        >
           <div
-            className="shrink-0 w-8 h-8 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center"
+            className="w-8 h-8 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center justify-self-center"
             aria-hidden
           >
             <Icon className="w-3.5 h-3.5 text-accent" />
           </div>
-          <span className="text-[11px] sm:text-xs text-text-primary leading-relaxed pt-1 min-w-0">
+          <span className="text-[11px] sm:text-xs text-text-primary leading-snug min-w-0 self-center">
             {text}
           </span>
         </li>
