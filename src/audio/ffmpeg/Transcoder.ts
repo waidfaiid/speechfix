@@ -276,40 +276,43 @@ function buildPostDeEsserFilters(params: ProcessingParams): string[] {
   const DRIVE_BOOST_DB = 4.0
   filters.push(`volume=${DRIVE_BOOST_DB}dB`)
 
-  // Note: the Web Audio preview uses WaveShaperNode(oversample='4x'), but
-  // replicating that in FFmpeg requires upsampling to 192 kHz which inflates
-  // the entire file to 4× its size in WASM heap — on mobile this easily
-  // exceeds the WASM memory budget and crashes FFmpeg.  Processing at 48 kHz
-  // is imperceptible for speech: any aliased harmonics land above 24 kHz
-  // (outside the speech band) and the audible saturation character is
-  // identical.  The normPreFilters chain already guarantees 48 kHz input.
+  // 4× oversampling mirrors Web Audio WaveShaperNode oversample='4x'.
+  // FFmpeg processes audio frame-by-frame (~4096 samples), so the upsampled
+  // frames are only ~65 KB in flight at any time — no WASM memory pressure.
+  const OVERSAMPLE_RATE = PREVIEW_SAMPLE_RATE * 4 // 192 000 Hz
+  filters.push(`aresample=${OVERSAMPLE_RATE}`)
+
+  // FFmpeg's aeval expression evaluator does NOT include tanh() in its
+  // built-in function table (only sinh and cosh are present).  We express
+  // tanh(x) as sinh(x)/cosh(x), which is mathematically identical.
+  // For typical audio signals (|val| ≤ 1, max drive ≈ 4.25) both sinh and
+  // cosh stay well within float range, so there is no risk of overflow.
 
   if (params.exciterMode === 'tube') {
-    // Mirrors createTubeCurve exactly.
-    // DC offset (dc) is cancelled analytically inside the expression.
     const drive = 1 + amount * 3.25
     const bias  = 0.08 * amount
     const wet   = Math.pow(amount, 1.3) * 0.88
     const dc    = Math.tanh(bias * drive) / drive
     const dry   = 1 - wet
     // f(x) = x·dry + (tanh((x+bias)·drive)/drive − dc)·wet
+    // tanh(u) → sinh(u)/cosh(u)
+    const u = `(val(ch)+${bias.toFixed(6)})*${drive.toFixed(6)}`
     filters.push(
-      `aeval=val(ch)*${dry.toFixed(6)}+(tanh((val(ch)+${bias.toFixed(6)})*${drive.toFixed(6)})/${drive.toFixed(6)}-${dc.toFixed(6)})*${wet.toFixed(6)}:c=same`,
+      `aeval=val(ch)*${dry.toFixed(6)}+(sinh(${u})/cosh(${u})/${drive.toFixed(6)}-${dc.toFixed(6)})*${wet.toFixed(6)}:c=same`,
     )
 
   } else if (params.exciterMode === 'tape') {
-    // Mirrors createTapeCurve exactly.
     const drive = 1 + amount * 3.65
     const wet   = Math.pow(amount, 1.3) * 0.80
     const dry   = 1 - wet
     // f(x) = x·dry + tanh(x·drive)/drive·wet
+    const u = `val(ch)*${drive.toFixed(6)}`
     filters.push(
-      `aeval=val(ch)*${dry.toFixed(6)}+tanh(val(ch)*${drive.toFixed(6)})/${drive.toFixed(6)}*${wet.toFixed(6)}:c=same`,
+      `aeval=val(ch)*${dry.toFixed(6)}+sinh(${u})/cosh(${u})/${drive.toFixed(6)}*${wet.toFixed(6)}:c=same`,
     )
 
   } else {
     // Mirrors createAutoCurve: tube (0–30 %) + tape blends in (40–100 %)
-    // DC is cancelled analytically in the tube term (- dcCorr).
     const t = Math.min(1, amount / 0.3)
     const p = Math.max(0, (amount - 0.4) / 0.6)
 
@@ -321,26 +324,28 @@ function buildPostDeEsserFilters(params: ProcessingParams): string[] {
     const tapeBlend = p * 0.5
 
     if (p <= 0) {
-      // Only tube path
       const dry = 1 - tubeWet
+      const u = `(val(ch)+${bias.toFixed(6)})*${tubeDrive.toFixed(6)}`
       filters.push(
-        `aeval=val(ch)*${dry.toFixed(6)}+(tanh((val(ch)+${bias.toFixed(6)})*${tubeDrive.toFixed(6)})/${tubeDrive.toFixed(6)}-${dc.toFixed(6)})*${tubeWet.toFixed(6)}:c=same`,
+        `aeval=val(ch)*${dry.toFixed(6)}+(sinh(${u})/cosh(${u})/${tubeDrive.toFixed(6)}-${dc.toFixed(6)})*${tubeWet.toFixed(6)}:c=same`,
       )
     } else {
-      // Tube + tape blend — expand into a single aeval pass
       const tapeDrive    = 1 + p * 3.65
       const tapeWet      = Math.pow(p, 1.3) * 0.80
       const xCoeff       = ((1 - tubeWet) * tubeBlend + (1 - tapeWet) * tapeBlend).toFixed(6)
       const tubeSatCoeff = (tubeWet * tubeBlend).toFixed(6)
       const tapeSatCoeff = (tapeWet * tapeBlend).toFixed(6)
       const dcCorr       = (dc * tubeWet * tubeBlend).toFixed(6)
-      const tubeExpr = `tanh((val(ch)+${bias.toFixed(6)})*${tubeDrive.toFixed(6)})/${tubeDrive.toFixed(6)}*${tubeSatCoeff}`
-      const tapeExpr = `tanh(val(ch)*${tapeDrive.toFixed(6)})/${tapeDrive.toFixed(6)}*${tapeSatCoeff}`
+      const tubeU = `(val(ch)+${bias.toFixed(6)})*${tubeDrive.toFixed(6)}`
+      const tapeU = `val(ch)*${tapeDrive.toFixed(6)}`
+      const tubeExpr = `sinh(${tubeU})/cosh(${tubeU})/${tubeDrive.toFixed(6)}*${tubeSatCoeff}`
+      const tapeExpr = `sinh(${tapeU})/cosh(${tapeU})/${tapeDrive.toFixed(6)}*${tapeSatCoeff}`
       filters.push(`aeval=val(ch)*${xCoeff}+${tubeExpr}+${tapeExpr}-${dcCorr}:c=same`)
     }
   }
 
-  // Compensate the pre-drive boost — net gain through the exciter block = 0 dB.
+  // Downsample back to working rate and remove the pre-drive boost.
+  filters.push(`aresample=${PREVIEW_SAMPLE_RATE}`)
   filters.push(`volume=${-DRIVE_BOOST_DB}dB`)
   return filters
 }
