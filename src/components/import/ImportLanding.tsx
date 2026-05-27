@@ -15,7 +15,7 @@ import {
   Waves,
   Volume2,
   Sparkles,
-  Wand2,
+  Scissors,
   Layers,
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
@@ -30,53 +30,51 @@ const USE_CASES = [
   { icon: Download, label: 'Schnell exportieren', desc: 'Ohne DAW — direkt im Browser' },
 ] as const
 
-/** Vorschlagsliste — Reihenfolge & Auswahl nach deinem Feedback anpassbar. */
 const BENEFITS: ReadonlyArray<{ icon: LucideIcon; text: string }> = [
-  { icon: Zap, text: 'Sofort starten, keine Anmeldung' },
-  { icon: Headphones, text: 'A/B-Hören: Original vs. bearbeitet' },
+  { icon: Zap, text: 'Einfach öffnen und loslegen — kein Konto, kein Extra-Programm' },
+  {
+    icon: Headphones,
+    text: 'Vorher und nachher anhören — du merkst sofort: Das klingt besser',
+  },
   {
     icon: SlidersHorizontal,
-    text: 'Klang wird analysiert — EQ sinnvoll voreingestellt, du feinjustierst nur noch',
+    text: 'Klingt von Anfang an angenehmer und klarer — auch ohne Audio-Wissen',
   },
   {
     icon: Activity,
-    text: 'Laut-Leise wird gemessen — Kompression passend voreingestellt',
+    text: 'Mal zu leise, mal zu laut? Wird gleichmäßiger — die Stimme kommt gut rüber',
   },
   {
     icon: Waves,
-    text: 'Starke Rauschunterdrückung, die natürlich klingt — kein „unter Wasser“-Effekt',
-  },
-  {
-    icon: Radio,
-    text: 'Brummen (Netz, Raum) automatisch erkennen und reduzieren',
-  },
-  {
-    icon: Wand2,
-    text: 'Zischlaute werden erkannt und sanft abgemildert (De-Esser)',
-  },
-  {
-    icon: Volume2,
-    text: 'Export auf konkurrenzfähige Lautstärke — Podcast- & Plattform-tauglich',
-  },
-  {
-    icon: Sparkles,
-    text: 'Stimme wirkt näher und verständlicher — Präsenz & Wärme per Schieberegler',
-  },
-  {
-    icon: Headphones,
-    text: 'Jede Änderung sofort anhören — kein Rätselraten, kein Studio nötig',
+    text: 'Störendes Rauschen und Brummen werden leiser — natürlich, nicht „verfremdet“',
   },
   {
     icon: Mic,
-    text: 'Für Reden, Predigten & Podcasts optimiert — nicht für Musik-Produktion',
+    text: 'Unangenehme „S“-Laute werden weicher — angenehmer zum Zuhören',
+  },
+  {
+    icon: Volume2,
+    text: 'Am Ende schön laut — vergleichbar mit anderen Podcasts und Videos',
+  },
+  {
+    icon: Scissors,
+    text: 'Lange Stille am Anfang oder Ende abschneiden — nur der Inhalt bleibt',
+  },
+  {
+    icon: Sparkles,
+    text: 'Deine Stimme wirkt näher und verständlicher — bei Bedarf mit einem Regler nachhelfen',
+  },
+  {
+    icon: Headphones,
+    text: 'Du hörst jede Änderung sofort — einfach drehen, bis es für dich passt',
   },
   {
     icon: Layers,
-    text: 'Mehrere Dateien nacheinander bearbeiten und exportieren',
+    text: 'Mehrere Aufnahmen hintereinander — ohne jedes Mal von vorn',
   },
   {
     icon: Download,
-    text: 'MP3, WAV, FLAC & mehr — fertig zum Teilen, ohne DAW',
+    text: 'Speichern und weitergeben — fertig zum Hochladen oder Verschicken',
   },
 ]
 
