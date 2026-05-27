@@ -59,15 +59,24 @@ export function ImportLanding() {
             Sprach-Audio
             <span className="text-accent"> reparieren</span>
           </h2>
-          <p className="text-text-secondary text-sm leading-relaxed max-w-[280px]">
-            Professionelle Aufbereitung für Reden, Predigten und Podcasts — direkt im Browser.
+          <p className="text-text-secondary text-sm leading-snug max-w-[300px]">
+            Professionelle Audio Aufbereitung
+            <br />
+            für Reden, Predigten und Podcasts
+            <br />
+            — direkt im Browser.
           </p>
           <div
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-pill bg-success/10 border border-success/30 text-success text-[11px] font-medium"
+            className="flex flex-col items-center gap-1 px-4 py-2.5 rounded-xl bg-success/10 border border-success/30 text-success text-center max-w-[300px]"
             role="status"
           >
-            <Lock className="w-3.5 h-3.5 shrink-0" aria-hidden />
-            <span>100&nbsp;% lokal — nur Browser-Speicher, kein Server</span>
+            <div className="flex items-center justify-center gap-2 text-[11px] font-semibold leading-snug">
+              <Lock className="w-3.5 h-3.5 shrink-0" aria-hidden />
+              <span>100&nbsp;% lokal — kein Upload, kein Server</span>
+            </div>
+            <p className="text-[10px] font-medium leading-snug text-success/95 px-1">
+              alles wird ausschließlich auf deinem Gerät berechnet
+            </p>
           </div>
         </div>
       </header>
