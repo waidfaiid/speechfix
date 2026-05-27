@@ -1,7 +1,7 @@
 {
   "name": "SpeechFix",
   "short_name": "SpeechFix",
-  "description": "Audio-Reparatur für Predigten und Vorträge",
+  "description": "Sprach-Audio reparieren im Browser — KI-Rauschfilter, Brummen, EQ. 100 % lokal, kein Upload.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f0e0d",

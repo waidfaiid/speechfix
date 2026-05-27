@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect } from 'react'
 import { Layout } from '@/components/layout/Layout'
 import { DropZone } from '@/components/import/DropZone'
+import { ImportLanding } from '@/components/import/ImportLanding'
 import { FileList } from '@/components/import/FileList'
 import { WaveformDisplay } from '@/components/waveform/WaveformDisplay'
 import { TransportControls } from '@/components/waveform/TransportControls'
@@ -154,7 +155,7 @@ export default function App() {
 
   return (
     <Layout>
-      {hasFiles ? <WorkspaceView /> : <DropZone />}
+      {hasFiles ? <WorkspaceView /> : <ImportLanding />}
       <EQProPanel />
       <ExportProgress />
       <ToastContainer />

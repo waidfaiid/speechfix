@@ -4,19 +4,83 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 
-    <!-- PWA / App -->
-    <meta name="theme-color" content="#0f0e0d" />
-    <meta name="description" content="Audio-Reparatur für Predigten und Vorträge – schnell, einfach, ohne Vorkenntnisse" />
+    <title>SpeechFix – Sprach-Audio reparieren im Browser | 100 % lokal, KI-Rauschfilter</title>
+    <meta name="description" content="SpeechFix: Sprach-Audio für Predigten, Podcasts und Vorträge professionell aufbereiten — Brummen, Rauschen, EQ, Kompressor. 100 % lokal im Browser, kein Upload, KI-Rauschunterdrückung." />
+    <meta name="keywords" content="Sprach-Audio reparieren, Audio Predigt verbessern, Rauschunterdrückung Browser, KI Audio lokal, Brummfilter Sprache, Podcast Audio aufbereiten, De-Esser online, Audio ohne Upload, SpeechFix, Sprachaufnahme optimieren" />
+    <meta name="robots" content="index, follow" />
+    <meta name="author" content="SpeechFix" />
+    <meta name="application-name" content="SpeechFix" />
 
-    <!-- Open Graph / Social Sharing -->
-    <meta property="og:title" content="SpeechFix" />
-    <meta property="og:description" content="Audio-Reparatur für Predigten und Vorträge – schnell, einfach, ohne Vorkenntnisse" />
+    <meta name="theme-color" content="#0f0e0d" />
+
+    <meta property="og:locale" content="de_DE" />
+    <meta property="og:title" content="SpeechFix – Sprach-Audio reparieren | 100 % lokal im Browser" />
+    <meta property="og:description" content="Professionelle Sprach-Aufbereitung: Rauschen, Brummen, EQ, Export. Alles lokal — keine Cloud, kein Upload." />
     <meta property="og:image" content="/icons/og-image.png" />
     <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary" />
-    <meta name="twitter:image" content="/icons/icon-512x512.png" />
+    <meta property="og:site_name" content="SpeechFix" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="SpeechFix – Sprach-Audio reparieren im Browser" />
+    <meta name="twitter:description" content="KI-Rauschfilter, Brummen, EQ & Export — 100 % lokal, ohne Upload." />
+    <meta name="twitter:image" content="/icons/og-image.png" />
 
-    <!-- iOS PWA -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "SpeechFix",
+      "applicationCategory": "MultimediaApplication",
+      "operatingSystem": "Web Browser",
+      "browserRequirements": "Requires JavaScript. Audio processing runs entirely in the browser.",
+      "description": "Browser-basiertes Tool zur professionellen Aufbereitung von Sprach-Audio: KI-Rauschunterdrückung, Brummfilter, EQ, Kompressor, De-Esser und Export. Verarbeitung erfolgt zu 100 Prozent lokal im Gerätespeicher — ohne Upload und ohne Server.",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "EUR" },
+      "featureList": [
+        "KI-Rauschunterdrückung im Browser",
+        "Automatischer Brumm- und Netzbrummfilter",
+        "Sprach-EQ und Pro-EQ",
+        "Dynamik-Kompressor und Limiter",
+        "De-Esser und Präsenz-Exciter",
+        "A/B-Vergleich Original vs. bearbeitet",
+        "Export MP3, WAV, FLAC und mehr",
+        "100 Prozent lokale Verarbeitung ohne Upload"
+      ],
+      "inLanguage": "de",
+      "isAccessibleForFree": true
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": [
+        {
+          "@type": "Question",
+          "name": "Werden meine Audio-Dateien hochgeladen?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Nein. SpeechFix verarbeitet Audio ausschließlich lokal im Arbeitsspeicher Ihres Browsers. Es gibt keinen Server-Upload und keine Cloud-Speicherung Ihrer Aufnahmen."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Für welche Inhalte ist SpeechFix gedacht?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "SpeechFix ist optimiert für Sprache: Predigten, Vorträge, Podcasts, Interviews und Reden. Funktionen umfassen Rauschunterdrückung mit KI, Brummfilter, EQ, Kompressor, De-Esser und schnellen Export."
+          }
+        },
+        {
+          "@type": "Question",
+          "name": "Welche Audioformate werden unterstützt?",
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": "Import: MP3, WAV, AIFF, FLAC, AAC, M4A und OGG. Export in gängigen Formaten inklusive MP3, WAV und FLAC."
+          }
+        }
+      ]
+    }
+    </script>
+
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="SpeechFix" />
@@ -24,18 +88,14 @@
     <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152x152.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180x180.png" />
 
-    <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
     <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16x16.png" />
     <link rel="manifest" href="/manifest.json" />
 
-    <!-- Inter & JetBrains Mono Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-
-    <title>SpeechFix - Pro Flat</title>
   </head>
   <body>
     <div id="root"></div>
