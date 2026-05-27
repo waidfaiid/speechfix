@@ -371,7 +371,13 @@ export class AudioEngine {
     else this.bypassGain.connect(this.masterOut!)
 
     this.pinkNoiseGain.connect(this.masterOut)
-    this.masterOut.connect(ctx.destination)
+
+    // On iOS the master output is routed through a MediaStreamDestinationNode
+    // wired to an <audio> element so that playback uses the media-playback
+    // audio session (not the ringer bus).  On all other platforms this falls
+    // back to ctx.destination.
+    const dest = audioContextManager.outputDestination ?? ctx.destination
+    this.masterOut.connect(dest)
   }
 
   /**
@@ -732,8 +738,10 @@ export class AudioEngine {
   play(startFrom?: number): void {
     if (!this.ctx || !this.buffer) return
 
-    // The play button is a user gesture — use it as a second-chance unlock in
-    // case the file-picker gesture expired before the unlock could fire.
+    // The play button is a user gesture — restart the iOS <audio> element if
+    // it was paused (e.g. the page was backgrounded while loading the file),
+    // and also attempt the session unlock as a belt-and-suspenders fallback.
+    audioContextManager.resumeIOSStreamOutput()
     audioContextManager.unlockAudioSession()
 
     // On iOS (and some Android browsers) the AudioContext is suspended whenever
