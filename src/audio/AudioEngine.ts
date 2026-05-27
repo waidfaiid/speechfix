@@ -112,6 +112,10 @@ export class AudioEngine {
   private startTime = 0
   private pausedAt = 0
   private playing = false
+  /** True while a ctx.resume() initiated by play() is in-flight. Cleared by
+   *  pause()/stop() so a Pause tap during the ~50 ms resume window cancels
+   *  the pending start, and a second Play tap doesn't double-fire. */
+  private _resumePending = false
   private trimStart = 0
   private trimEnd: number | null = null
 
@@ -727,6 +731,29 @@ export class AudioEngine {
 
   play(startFrom?: number): void {
     if (!this.ctx || !this.buffer) return
+
+    // On iOS (and some Android browsers) the AudioContext is suspended whenever
+    // the page is backgrounded — including while the native file-picker is open.
+    // resume() must be initiated synchronously inside a user-gesture handler.
+    // play() is always called from a button click or touch event, so calling
+    // resume() here satisfies that constraint.  We wait for it to resolve, then
+    // restart play() with the same position so audio starts cleanly.
+    if (this.ctx.state === 'suspended') {
+      if (this._resumePending) return   // already waiting on a resume
+      this._resumePending = true
+      this.ctx.resume().then(() => {
+        if (this._resumePending && this.buffer) {
+          this._resumePending = false
+          this.play(startFrom)
+        }
+      }).catch((err) => {
+        this._resumePending = false
+        console.warn('[AudioEngine] ctx.resume() in play() failed:', err)
+      })
+      return
+    }
+    this._resumePending = false
+
     this.stop()
     const ctx = this.ctx
 
@@ -798,6 +825,7 @@ export class AudioEngine {
   }
 
   pause(): void {
+    this._resumePending = false   // cancel any in-flight ctx.resume() → play() chain
     if (!this.playing) return
     this.pausedAt = this.currentTime
     this.source?.stop()
@@ -808,6 +836,7 @@ export class AudioEngine {
   }
 
   stop(): void {
+    this._resumePending = false
     try { this.source?.stop() } catch { /* */ }
     this.source = null
     this.stopPinkNoise()
