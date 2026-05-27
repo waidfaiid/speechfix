@@ -41,10 +41,30 @@ const WORKFLOW_STEPS = [
   { icon: CheckCircle2, label: 'Fertig' },
 ] as const
 
+function BenefitsList() {
+  return (
+    <ul className="w-full mt-3.5 rounded-xl border border-card-border/60 bg-card/35 overflow-hidden divide-y divide-card-border/50 shadow-sm shadow-black/10">
+      {BENEFITS.map(({ icon: Icon, text }) => (
+        <li key={text} className="flex items-start gap-3 px-3.5 py-2.5 sm:py-3">
+          <div
+            className="shrink-0 w-8 h-8 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center"
+            aria-hidden
+          >
+            <Icon className="w-3.5 h-3.5 text-accent" />
+          </div>
+          <span className="text-[11px] sm:text-xs text-text-primary leading-relaxed pt-1 min-w-0">
+            {text}
+          </span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 function WorkflowJourney() {
   return (
     <section
-      className="w-full mt-2.5 rounded-xl border border-accent/30 bg-gradient-to-b from-accent/10 via-card/80 to-card/40 px-2 py-2.5 shadow-inner shadow-black/15"
+      className="w-full mt-3 rounded-xl border border-accent/25 bg-gradient-to-b from-accent/8 via-card/70 to-card/30 px-2.5 py-3 shadow-sm shadow-black/15"
       aria-label="Ablauf in fünf Schritten"
     >
       <ol className="relative flex items-start justify-between gap-0.5">
@@ -70,7 +90,7 @@ function WorkflowJourney() {
                   aria-hidden
                 />
               </div>
-              <span className="mt-1 text-[9px] font-semibold text-white text-center leading-tight px-0.5">
+              <span className="mt-1.5 text-[9px] font-medium text-text-primary text-center leading-[1.15] px-0.5">
                 {step.label}
               </span>
               {!isLast && (
@@ -150,17 +170,7 @@ export function ImportLanding() {
           <div className="w-full mt-2">
             <FileUploadArea variant="landing" picker={picker} />
           </div>
-          <ul className="w-full mt-3 space-y-1.5 text-left">
-            {BENEFITS.map(({ icon: Icon, text }) => (
-              <li
-                key={text}
-                className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-card/50 border border-card-border/70"
-              >
-                <Icon className="w-3.5 h-3.5 text-accent shrink-0 mt-0.5" aria-hidden />
-                <span className="text-[11px] text-text-primary leading-snug">{text}</span>
-              </li>
-            ))}
-          </ul>
+          <BenefitsList />
           <WorkflowJourney />
         </div>
       </header>
