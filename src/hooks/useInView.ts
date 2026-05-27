@@ -5,7 +5,13 @@ interface UseInViewOptions {
   rootMargin?: string
   triggerOnce?: boolean
   /** Scroll-Container; Standard ist der Viewport. */
-  root?: RefObject<Element | null>
+  root?: RefObject<Element | null> | Element | null
+}
+
+function resolveRoot(root?: RefObject<Element | null> | Element | null): Element | null {
+  if (!root) return null
+  if ('current' in root) return root.current
+  return root
 }
 
 export function useInView<T extends HTMLElement = HTMLDivElement>({
@@ -16,6 +22,11 @@ export function useInView<T extends HTMLElement = HTMLDivElement>({
 }: UseInViewOptions = {}) {
   const ref = useRef<T>(null)
   const [inView, setInView] = useState(false)
+  const [rootEl, setRootEl] = useState<Element | null>(() => resolveRoot(root))
+
+  useEffect(() => {
+    setRootEl(resolveRoot(root))
+  }, [root])
 
   useEffect(() => {
     const el = ref.current
@@ -30,12 +41,12 @@ export function useInView<T extends HTMLElement = HTMLDivElement>({
           setInView(false)
         }
       },
-      { threshold, rootMargin, root: root?.current ?? null },
+      { threshold, rootMargin, root: rootEl },
     )
 
     observer.observe(el)
     return () => observer.disconnect()
-  }, [threshold, rootMargin, triggerOnce, root])
+  }, [threshold, rootMargin, triggerOnce, rootEl])
 
   return { ref, inView }
 }

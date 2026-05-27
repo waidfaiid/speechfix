@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { AudioLines, Lock, Zap, Headphones, Church, Podcast, Mic, Radio, Download, Upload } from 'lucide-react'
 import { cn } from '@/utils/cn'
@@ -19,6 +19,8 @@ const BENEFITS = [
   { icon: Zap, text: 'Sofort starten, keine Anmeldung' },
   { icon: Headphones, text: 'A/B-Hören: Original vs. bearbeitet' },
 ] as const
+
+const SCROLL_END_THRESHOLD_PX = 100
 
 function RevealSection({
   children,
@@ -46,26 +48,57 @@ function RevealSection({
 }
 
 export function ImportLanding() {
-  const scrollRef = useRef<HTMLDivElement>(null)
   const picker = useAudioFilePicker()
   const { openPicker } = picker
+  const uploadSectionRef = useRef<HTMLDivElement>(null)
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null)
+  const [uploadZoneVisible, setUploadZoneVisible] = useState(false)
 
-  const { ref: uploadAnchorRef, inView: uploadVisible } = useInView<HTMLDivElement>({
-    root: scrollRef,
-    threshold: 0.35,
-    rootMargin: '0px 0px -24px 0px',
-    triggerOnce: false,
-  })
+  const updateUploadVisibility = useCallback(() => {
+    const scroller = scrollEl
+    const upload = uploadSectionRef.current
+    if (!scroller || !upload) {
+      setUploadZoneVisible(false)
+      return
+    }
 
-  const showStickyCta = !uploadVisible
+    const scrollerRect = scroller.getBoundingClientRect()
+    const uploadRect = upload.getBoundingClientRect()
+    const visible =
+      uploadRect.top < scrollerRect.bottom - 48 &&
+      uploadRect.bottom > scrollerRect.top + 48
+
+    const scrolledToEnd =
+      scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - SCROLL_END_THRESHOLD_PX
+
+    setUploadZoneVisible(visible || scrolledToEnd)
+  }, [scrollEl])
+
+  useEffect(() => {
+    const scroller = scrollEl
+    if (!scroller) return
+
+    updateUploadVisibility()
+    scroller.addEventListener('scroll', updateUploadVisibility, { passive: true })
+    const ro = new ResizeObserver(updateUploadVisibility)
+    ro.observe(scroller)
+    if (uploadSectionRef.current) ro.observe(uploadSectionRef.current)
+
+    return () => {
+      scroller.removeEventListener('scroll', updateUploadVisibility)
+      ro.disconnect()
+    }
+  }, [scrollEl, updateUploadVisibility])
+
+  const showStickyCta = !uploadZoneVisible
 
   return (
     <article className="flex-1 flex flex-col min-h-0 relative">
       <div
-        ref={scrollRef}
+        ref={setScrollEl}
         className={cn(
-          'flex-1 overflow-y-auto scrollbar-none',
-          showStickyCta ? 'pb-2' : 'pb-8',
+          'flex-1 min-h-0 overflow-y-auto scrollbar-none',
+          showStickyCta ? 'pb-28' : 'pb-8',
         )}
       >
         <header className="relative px-4 pt-2 pb-6 overflow-hidden">
@@ -160,7 +193,7 @@ export function ImportLanding() {
             <h3 className="text-[11px] font-tech uppercase tracking-widest text-text-secondary mb-3 text-center">
               Loslegen
             </h3>
-            <div ref={uploadAnchorRef}>
+            <div ref={uploadSectionRef}>
               <FileUploadArea variant="hero" picker={picker} />
             </div>
             <p className="text-center text-[10px] text-text-secondary/80 mt-3 leading-relaxed px-2">
@@ -181,19 +214,23 @@ export function ImportLanding() {
 
       <div
         className={cn(
-          'shrink-0 z-20 px-4 pt-3 safe-bottom transition-all duration-300 ease-out',
-          'border-t border-card-border/60 bg-background/95 backdrop-blur-md',
+          'fixed bottom-0 left-1/2 z-50 w-full max-w-md -translate-x-1/2 px-4 pt-4 safe-bottom pointer-events-none transition-all duration-300',
+          'bg-gradient-to-t from-background from-40% via-background/95 to-transparent',
           showStickyCta
-            ? 'opacity-100 translate-y-0 pointer-events-auto pb-4'
-            : 'opacity-0 translate-y-3 pointer-events-none pb-0 max-h-0 overflow-hidden pt-0 border-transparent',
+            ? 'opacity-100 translate-y-0'
+            : 'opacity-0 translate-y-4',
         )}
         aria-hidden={!showStickyCta}
       >
         <Button
           variant="primary"
           size="lg"
-          className="w-full shadow-lg shadow-accent/20"
+          className={cn(
+            'w-full shadow-lg shadow-accent/25 pointer-events-auto',
+            !showStickyCta && 'pointer-events-none',
+          )}
           onClick={openPicker}
+          tabIndex={showStickyCta ? 0 : -1}
         >
           <Upload className="w-5 h-5" aria-hidden />
           Jetzt starten
