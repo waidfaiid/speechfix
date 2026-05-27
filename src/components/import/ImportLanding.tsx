@@ -48,7 +48,7 @@ export function ImportLanding() {
 
   return (
     <article className="flex-1 flex flex-col min-h-0 overflow-y-auto scrollbar-none">
-      <header className="relative px-4 pt-2 pb-6 overflow-hidden">
+      <header className="relative px-4 pt-8 pb-4 overflow-hidden">
         <div
           className="pointer-events-none absolute -top-16 left-1/2 -translate-x-1/2 w-64 h-64 rounded-full bg-accent/10 blur-3xl"
           aria-hidden
@@ -80,6 +80,9 @@ export function ImportLanding() {
             <p className="text-[10px] font-medium leading-snug text-success/95 px-1">
               alles wird ausschließlich auf deinem Gerät berechnet
             </p>
+          </div>
+          <div className="w-full mt-2">
+            <FileUploadArea variant="landing" picker={picker} />
           </div>
         </div>
       </header>
@@ -136,16 +139,6 @@ export function ImportLanding() {
           </div>
         </RevealSection>
 
-        <RevealSection delay={160} className="pb-2">
-          <h3 className="text-[11px] font-tech uppercase tracking-widest text-text-secondary mb-3 text-center">
-            Loslegen
-          </h3>
-          <FileUploadArea variant="hero" picker={picker} />
-          <p className="text-center text-[10px] text-text-secondary/80 mt-3 leading-relaxed px-2">
-            Deine Dateien werden ausschließlich im Arbeitsspeicher deines Browsers verarbeitet.
-            Keine Cloud, kein Konto, keine Weitergabe an Dritte.
-          </p>
-        </RevealSection>
       </div>
 
       <div className="sr-only">

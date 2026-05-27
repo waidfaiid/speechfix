@@ -154,7 +154,7 @@ export default function App() {
   }, [])
 
   return (
-    <Layout>
+    <Layout showHeader={hasFiles}>
       {hasFiles ? <WorkspaceView /> : <ImportLanding />}
       <EQProPanel />
       <ExportProgress />
