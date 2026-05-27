@@ -51,6 +51,26 @@ html, body {
   display: none;
 }
 
+/*
+ * iOS Safari auto-zoom prevention.
+ *
+ * Safari zooms the viewport when a focused <input> or <select> has
+ * font-size < 16 px.  Forcing 16 px here is the only reliable fix;
+ * it beats any Tailwind utility class (higher attribute-selector
+ * specificity) without touching individual components.
+ *
+ * Excluded: range sliders, checkboxes, radio buttons, file pickers,
+ * and hidden fields — these never receive text focus.
+ *
+ * The RotaryKnob edit input (normally text-[9px]) will also get 16 px
+ * here, which is actually fine for a temporary value-entry field.
+ */
+input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]),
+select,
+textarea {
+  font-size: 16px !important;
+}
+
 /* Number inputs */
 input[type=number]::-webkit-inner-spin-button,
 input[type=number]::-webkit-outer-spin-button {

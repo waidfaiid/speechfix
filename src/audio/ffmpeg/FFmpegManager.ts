@@ -61,7 +61,20 @@ class FFmpegManager {
   }
 
   async exec(args: string[]): Promise<void> {
-    await this.instance.exec(args)
+    const logs: string[] = []
+    const handler = ({ message }: { message: string }) => logs.push(message)
+    this.instance.on('log', handler)
+    let code = 0
+    try {
+      code = await this.instance.exec(args)
+    } finally {
+      this.instance.off('log', handler)
+    }
+    if (code !== 0) {
+      // Keep only the last few non-empty lines — they contain the actual error.
+      const tail = logs.filter(l => l.trim()).slice(-6).join(' | ')
+      throw new Error(`FFmpeg fehlgeschlagen (Exit-Code ${code})${tail ? `: ${tail}` : ''}`)
+    }
   }
 
   /**
@@ -73,10 +86,14 @@ class FFmpegManager {
     const logs: string[] = []
     const handler = ({ message }: { message: string }) => logs.push(message)
     this.instance.on('log', handler)
+    let code = 0
     try {
-      await this.instance.exec(args)
+      code = await this.instance.exec(args)
     } finally {
       this.instance.off('log', handler)
+    }
+    if (code !== 0) {
+      throw new Error(`FFmpeg fehlgeschlagen (Exit-Code ${code}). Logs: ${logs.slice(-5).join(' | ')}`)
     }
     return logs
   }
