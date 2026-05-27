@@ -14,6 +14,19 @@ import type { BatchFile } from '@/types/file.types'
 import { cn } from '@/utils/cn'
 
 const FORMATS: ExportFormat[] = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg']
+
+/**
+ * Scroll the focused input into view after the mobile keyboard has finished
+ * sliding up (~300–350 ms). Without this delay the scroll fires before the
+ * keyboard has claimed its space, so the element ends up hidden underneath it.
+ * Also acts as the canonical spot to add any other mobile-focus side-effects.
+ */
+function scrollInputIntoView(e: React.FocusEvent<HTMLInputElement>) {
+  const el = e.currentTarget
+  setTimeout(() => {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, 350)
+}
 const LUFS_OPTIONS = [-14, -16] as const
 
 const QUALITIES: { value: ExportQuality; label: string }[] = [
@@ -160,7 +173,8 @@ function LimiterSection({
                 else setShowCustom(false)
               }}
               placeholder="-23"
-              className="w-full bg-background text-white font-tech text-xs text-center py-3 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              onFocus={scrollInputIntoView}
+              className="w-full bg-background text-white font-tech text-base text-center py-3 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
             />
           </div>
         ) : (
@@ -352,16 +366,18 @@ export function ExportPanel() {
                 type="text" 
                 value={exportOptions.filename}
                 onChange={(e) => setExportOptions({ filename: e.target.value })}
+                onFocus={scrollInputIntoView}
                 placeholder={activeFile ? activeFile.name.replace(/\.[^.]+$/, '') : 'dateiname'}
-                className="bg-background border border-card-border p-3 text-sm min-w-0 flex-1 rounded-l-lg focus:outline-none focus:border-accent text-white font-medium"
+                className="bg-background border border-card-border p-3 text-base min-w-0 flex-1 rounded-l-lg focus:outline-none focus:border-accent text-white font-medium"
               />
               <div className="flex items-center shrink-0">
                 <input 
                   type="text" 
                   value={exportOptions.filenameSuffix}
                   onChange={(e) => setExportOptions({ filenameSuffix: e.target.value })}
+                  onFocus={scrollInputIntoView}
                   placeholder="_fixed"
-                  className="w-20 bg-background border border-l-0 border-card-border text-white font-tech text-sm focus:outline-none focus:border-accent px-2 py-3"
+                  className="w-20 bg-background border border-l-0 border-card-border text-white font-tech text-base focus:outline-none focus:border-accent px-2 py-3"
                 />
                 <span className="bg-card-elevated text-text-secondary font-tech text-sm px-2.5 border border-l-0 border-card-border rounded-r-lg flex items-center self-stretch">.{exportOptions.format}</span>
               </div>
