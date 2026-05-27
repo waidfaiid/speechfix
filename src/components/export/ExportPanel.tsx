@@ -281,8 +281,9 @@ export function ExportPanel() {
         blobs.push({ name: outName, blob })
         if (zip) zip.file(outName, blob)
       } catch (err) {
-        updateFile(f.id, { status: 'error', error: String(err) })
-        addToast(`Fehler bei ${f.name}`, 'error')
+        const msg = err instanceof Error ? err.message : String(err)
+        updateFile(f.id, { status: 'error', error: msg })
+        addToast(`Fehler bei ${f.name}: ${msg}`, 'error')
       }
     }
 
