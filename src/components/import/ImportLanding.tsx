@@ -41,22 +41,17 @@ const WORKFLOW_STEPS = [
   { icon: CheckCircle2, label: 'Fertig' },
 ] as const
 
-const HERO_LINES = [
-  'für Reden, Predigten und Podcasts',
-  '— direkt hier im Browser',
-] as const
-
 function LandingHero() {
   return (
-    <div className="w-full flex items-start gap-3 sm:gap-4 text-left">
+    <div className="w-full flex items-end gap-2 sm:gap-2.5 text-left">
       <SpeechFixLogo layout="stacked" className="shrink-0" />
-      <ul className="flex-1 min-w-0 list-none space-y-1.5 pt-2 sm:pt-2.5 m-0 p-0">
-        {HERO_LINES.map((line) => (
-          <li key={line} className="text-[11px] sm:text-xs text-text-secondary leading-snug">
-            {line}
-          </li>
-        ))}
-      </ul>
+      <p className="flex-1 min-w-0 text-[10px] sm:text-[11px] text-text-secondary leading-[1.32] pb-px">
+        für Reden, Predigten
+        <br />
+        und Podcasts
+        <br />
+        <span className="text-text-secondary/85">— direkt hier im Browser</span>
+      </p>
     </div>
   )
 }

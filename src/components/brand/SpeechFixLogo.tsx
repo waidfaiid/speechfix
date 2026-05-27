@@ -11,7 +11,7 @@ export function SpeechFixLogo({ className, layout = 'horizontal' }: SpeechFixLog
   if (layout === 'stacked') {
     return (
       <div
-        className={cn('inline-grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-1 items-center', className)}
+        className={cn('inline-grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 items-center', className)}
         aria-label="SpeechFix"
       >
         <AudioLines
@@ -22,7 +22,7 @@ export function SpeechFixLogo({ className, layout = 'horizontal' }: SpeechFixLog
           <span className="text-white">Speech</span>
           <span className="text-accent">Fix</span>
         </p>
-        <p className="text-[12px] font-semibold text-white leading-tight text-left whitespace-nowrap">
+        <p className="text-[11px] font-semibold text-white leading-tight text-left whitespace-nowrap">
           Sprach-Audio <span className="text-accent">verbessern</span>
         </p>
       </div>
