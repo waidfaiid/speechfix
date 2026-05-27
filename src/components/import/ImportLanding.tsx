@@ -22,7 +22,7 @@ import { FileUploadArea } from './FileUploadArea'
 import { SpeechFixLogo } from '@/components/brand/SpeechFixLogo'
 
 const USE_CASES = [
-  { icon: Mic, label: 'Predigten & Vorträge', desc: 'Klarere Stimme für Podcast & Kirche' },
+  { icon: Mic, label: 'Predigten & Vorträge', desc: 'Klarere Stimme für Podcast & Kirchen-Gemeinde' },
   { icon: Radio, label: 'Aufnahmen reparieren', desc: 'Brummen, Rauschen, Zischen entfernen' },
   { icon: Download, label: 'Schnell exportieren', desc: 'Ohne DAW — direkt im Browser' },
 ] as const
@@ -30,7 +30,7 @@ const USE_CASES = [
 const BENEFITS: ReadonlyArray<{ icon: LucideIcon; text: string }> = [
   { icon: Zap, text: 'Sofort starten, keine Anmeldung' },
   { icon: Sparkles, text: 'Kein Audio-Wissen nötig' },
-  { icon: SlidersHorizontal, text: 'Ein Regler pro Verbesserung' },
+  { icon: SlidersHorizontal, text: 'Alle Verbesserungen intuitiv mit einem Regler einstellbar' },
 ]
 
 const WORKFLOW_STEPS = [
@@ -188,7 +188,7 @@ export function ImportLanding() {
           </div>
           <div className="mt-3 flex flex-wrap gap-2 justify-center">
             <span className="inline-flex items-center gap-1.5 text-[10px] text-text-secondary bg-background border border-card-border px-2.5 py-1 rounded-pill">
-              <Church className="w-3 h-3 text-accent" aria-hidden /> Gemeinde & Kirche
+              <Church className="w-3 h-3 text-accent" aria-hidden /> Kirchen-Gemeinde
             </span>
             <span className="inline-flex items-center gap-1.5 text-[10px] text-text-secondary bg-background border border-card-border px-2.5 py-1 rounded-pill">
               <Podcast className="w-3 h-3 text-accent" aria-hidden /> Podcast & Video
