@@ -47,7 +47,7 @@ export const FileUploadArea = forwardRef<FileUploadAreaHandle, FileUploadAreaPro
         className={cn(
           'w-full flex flex-col rounded-card border-2 border-dashed transition-all duration-300',
           isLanding
-            ? 'gap-1.5 p-2.5 bg-card/20'
+            ? 'gap-3 p-4 bg-card/25'
             : isHero
               ? 'items-center gap-5 p-8'
               : 'items-center gap-6 p-10 max-w-sm',
@@ -58,33 +58,25 @@ export const FileUploadArea = forwardRef<FileUploadAreaHandle, FileUploadAreaPro
         )}
       >
         {isLanding ? (
-          <div className="flex items-center gap-2 min-w-0 w-full">
+          <div className="text-center space-y-1">
             <div
               className={cn(
-                'shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border border-card-border/80 transition-colors',
-                dragging ? 'bg-accent/15 border-accent/40' : 'bg-card/60',
+                'mx-auto w-11 h-11 flex items-center justify-center rounded-xl border border-card-border transition-colors',
+                dragging ? 'bg-accent/15 border-accent/40' : 'bg-card/80',
               )}
             >
               {dragging ? (
-                <Upload size={16} className="text-accent" aria-hidden />
+                <Upload size={22} className="text-accent" aria-hidden />
               ) : (
-                <Music size={16} className="text-text-secondary" aria-hidden />
+                <Music size={22} className="text-text-secondary" aria-hidden />
               )}
             </div>
-            <div className="min-w-0 flex-1 text-left">
-              <p className="text-xs font-medium text-text-primary leading-tight">
-                {dragging ? 'Loslassen …' : 'Audio importieren'}
-              </p>
-              <p className="text-[9px] text-text-secondary leading-tight">ablegen oder wählen</p>
-            </div>
-            <Button
-              variant="primary"
-              size="sm"
-              className="h-9 px-3.5 shrink-0 rounded-lg text-xs font-semibold shadow-sm shadow-accent/20"
-              onClick={openPicker}
-            >
-              Wählen
-            </Button>
+            <p className="text-sm font-medium text-text-primary">
+              {dragging ? 'Jetzt loslassen …' : 'Audio importieren'}
+            </p>
+            <p className="text-[10px] text-text-secondary leading-snug">
+              Datei wählen oder hier ablegen
+            </p>
           </div>
         ) : (
           <>
@@ -111,20 +103,28 @@ export const FileUploadArea = forwardRef<FileUploadAreaHandle, FileUploadAreaPro
           </>
         )}
 
-        {!isLanding && (
-          <Button variant="primary" size={isHero ? 'lg' : 'lg'} className="w-full" onClick={openPicker}>
-            {isHero ? 'Jetzt starten — Datei wählen' : 'Datei auswählen'}
-          </Button>
-        )}
-
-        <p
+        <Button
+          variant="primary"
+          size={isLanding ? 'md' : 'lg'}
           className={cn(
-            'text-text-secondary text-center',
-            isLanding ? 'text-[9px] leading-tight text-text-secondary/75' : 'text-xs',
+            'w-full',
+            isLanding &&
+              'h-11 rounded-xl font-semibold shadow-md shadow-accent/25 active:scale-[0.99] hover:shadow-lg hover:shadow-accent/30',
           )}
+          onClick={openPicker}
         >
-          MP3, WAV, AIFF, FLAC, AAC, M4A, OGG
-        </p>
+          {isLanding ? 'Datei wählen' : isHero ? 'Jetzt starten — Datei wählen' : 'Datei auswählen'}
+        </Button>
+
+        {isLanding ? (
+          <p className="text-[10px] text-text-secondary/90 text-center leading-snug">
+            MP3, WAV, AIFF, FLAC, AAC, M4A, OGG
+          </p>
+        ) : (
+          <p className="text-text-secondary text-xs text-center">
+            MP3, WAV, AIFF, FLAC, AAC, M4A, OGG
+          </p>
+        )}
 
         <input
           ref={inputRef}

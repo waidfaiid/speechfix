@@ -41,26 +41,38 @@ const WORKFLOW_STEPS = [
   { icon: CheckCircle2, label: 'Fertig' },
 ] as const
 
-function LocalPrivacyBadge() {
+const HERO_BULLETS = [
+  'professionelle Audio Aufbereitung',
+  'für Reden, Predigten und Podcasts',
+  '— direkt hier im Browser',
+] as const
+
+function LandingHero() {
   return (
-    <div
-      className="w-full flex items-start gap-2 px-2.5 py-2 rounded-lg bg-success/8 border border-success/25 text-left"
-      role="status"
-    >
-      <Lock className="w-3.5 h-3.5 text-success shrink-0 mt-px" aria-hidden />
-      <p className="text-[10px] leading-snug text-success/95 min-w-0">
-        <span className="font-semibold text-success">100&nbsp;% lokal</span>
-        <span className="text-success/85"> — kein Upload, alles auf deinem Gerät</span>
-      </p>
+    <div className="w-full flex items-start gap-3 sm:gap-4 text-left">
+      <SpeechFixLogo layout="stacked" className="shrink-0" />
+      <ul className="flex-1 min-w-0 list-none space-y-1.5 pt-2 sm:pt-2.5 m-0 p-0">
+        {HERO_BULLETS.map((line) => (
+          <li
+            key={line}
+            className="flex gap-2 text-[11px] sm:text-xs text-text-secondary leading-snug"
+          >
+            <span className="text-accent font-bold shrink-0 leading-snug" aria-hidden>
+              ·
+            </span>
+            <span>{line}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
 
 function BenefitsList() {
   return (
-    <ul className="w-full mt-2.5 rounded-xl border border-card-border/60 bg-card/35 overflow-hidden divide-y divide-card-border/50 shadow-sm shadow-black/10">
+    <ul className="w-full mt-3.5 rounded-xl border border-card-border/60 bg-card/35 overflow-hidden divide-y divide-card-border/50 shadow-sm shadow-black/10">
       {BENEFITS.map(({ icon: Icon, text }) => (
-        <li key={text} className="flex items-start gap-2.5 px-3 py-2">
+        <li key={text} className="flex items-start gap-3 px-3.5 py-2.5 sm:py-3">
           <div
             className="shrink-0 w-8 h-8 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center"
             aria-hidden
@@ -79,7 +91,7 @@ function BenefitsList() {
 function WorkflowJourney() {
   return (
     <section
-      className="w-full mt-2.5 rounded-xl border border-accent/25 bg-gradient-to-b from-accent/8 via-card/70 to-card/30 px-2 py-2.5 shadow-sm shadow-black/15"
+      className="w-full mt-3 rounded-xl border border-accent/25 bg-gradient-to-b from-accent/8 via-card/70 to-card/30 px-2.5 py-3 shadow-sm shadow-black/15"
       aria-label="Ablauf in fünf Schritten"
     >
       <ol className="relative flex items-start justify-between gap-0.5">
@@ -152,23 +164,28 @@ export function ImportLanding() {
 
   return (
     <article className="flex-1 flex flex-col min-h-0 overflow-y-auto scrollbar-none">
-      <header className="relative px-4 pt-6 pb-3 overflow-hidden">
+      <header className="relative px-4 pt-8 pb-4 overflow-hidden">
         <div
-          className="pointer-events-none absolute -top-12 left-1/2 -translate-x-1/2 w-48 h-48 rounded-full bg-accent/8 blur-3xl"
+          className="pointer-events-none absolute -top-16 left-1/2 -translate-x-1/2 w-64 h-64 rounded-full bg-accent/10 blur-3xl"
           aria-hidden
         />
-        <div className="relative flex flex-col items-center w-full gap-2">
-          <div className="w-full flex flex-col items-center text-center gap-1">
-            <SpeechFixLogo size="compact" />
-            <p className="text-[13px] font-semibold text-white leading-tight">
-              Sprach-Audio <span className="text-accent">verbessern</span>
-            </p>
-            <p className="text-[11px] text-text-secondary leading-snug max-w-[300px]">
-              Für Reden, Predigten & Podcasts — professionell im Browser.
+        <div className="relative flex flex-col items-center w-full gap-3">
+          <LandingHero />
+          <div
+            className="flex flex-col items-center gap-1 px-4 py-2.5 rounded-xl bg-success/10 border border-success/30 text-success text-center max-w-[300px] w-full"
+            role="status"
+          >
+            <div className="flex items-center justify-center gap-2 text-[11px] font-semibold leading-snug">
+              <Lock className="w-3.5 h-3.5 shrink-0" aria-hidden />
+              <span>100&nbsp;% lokal — kein Upload, kein Server</span>
+            </div>
+            <p className="text-[10px] font-medium leading-snug text-success/95 px-1">
+              alles wird ausschließlich auf deinem Gerät berechnet
             </p>
           </div>
-          <LocalPrivacyBadge />
-          <FileUploadArea variant="landing" picker={picker} className="mt-0.5" />
+          <div className="w-full mt-2">
+            <FileUploadArea variant="landing" picker={picker} />
+          </div>
           <BenefitsList />
           <WorkflowJourney />
         </div>
